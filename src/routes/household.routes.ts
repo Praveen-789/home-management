@@ -1,9 +1,16 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
-import { create } from "../controllers/household.controller.js";
+import { create, list as listHouseholds } from "../controllers/household.controller.js";
+import { add, list, remove, updateRole } from "../controllers/household-member.controller.js";
 
 const router = Router();
 
 router.post("/", authenticate, create);
+router.get("/", authenticate, listHouseholds);
+router.get("/:householdId/members", authenticate, list);
+router.post("/:householdId/members", authenticate, add);
+router.patch("/:householdId/members/:userId", authenticate, updateRole);
+router.delete("/:householdId/members/:userId", authenticate, remove);
 
 export default router;
+

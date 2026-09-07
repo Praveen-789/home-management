@@ -25,15 +25,20 @@ model User {
   password  String
   createdAt DateTime @default(now())
 
-  memberships HouseholdMember[]
+  memberships       HouseholdMember[]
+  createdHouseholds Household[]       @relation("HouseholdCreator")
 }
 
 model Household {
+  createdById String
+  createdBy   User     @relation("HouseholdCreator", fields: [createdById], references: [id], onDelete: Restrict)
   id        String   @id @default(uuid())
   name      String
   createdAt DateTime @default(now())
 
   members HouseholdMember[]
+
+  @@unique([createdById, name])
 }
 
 model HouseholdMember {

@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --import tsx --test tests/*.test.mjs",
-    "dev": "tsx watch src/index.ts",
+    "dev": "nodemon --watch src --ext ts,json --exec tsx src/server.ts",
     "start": "npx tsx src/server.ts"
   },
   "keywords": [],
@@ -19,6 +19,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.4.0",
     "@types/pg": "^8.23.1",
+    "nodemon": "^3.1.14",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   },

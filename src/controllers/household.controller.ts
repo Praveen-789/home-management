@@ -1,6 +1,6 @@
 import type { Response } from "express";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.js";
-import { createHousehold } from "../services/household.service.js";
+import { createHousehold, listHouseholds } from "../services/household.service.js";
 import { AppError } from "../lib/errors.js";
 
 export const create = async (req: AuthenticatedRequest, res: Response) => {
@@ -28,5 +28,22 @@ export const create = async (req: AuthenticatedRequest, res: Response) => {
 
     console.error(error);
     return res.status(500).json({ message: "Failed to create household" });
+  }
+};
+
+export const list = async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.userId) {
+    return res.status(401).json({ message: "Authentication is required" });
+  }
+
+  try {
+    const households = await listHouseholds(req.userId);
+    return res.status(200).json({
+      message: "Households fetched successfully",
+      households,
+    });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ message: "Failed to fetch households" });
   }
 };

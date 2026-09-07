@@ -1,4 +1,4 @@
-﻿import assert from "node:assert/strict";
+import assert from "node:assert/strict";
 import { after, afterEach, before, mock, test } from "node:test";
 import { once } from "node:events";
 import jwt from "jsonwebtoken";
@@ -19,6 +19,7 @@ before(async () => {
   url = `http://127.0.0.1:${server.address().port}/api/households`;
 });
 const originalCreate = prisma.household.create;
+const originalFindMembers = prisma.householdMember.findMany;
 const mockCreate = (implementation) => {
   const fn = mock.fn(implementation);
   prisma.household.create = fn;
@@ -26,6 +27,7 @@ const mockCreate = (implementation) => {
 };
 afterEach(() => {
   prisma.household.create = originalCreate;
+  prisma.householdMember.findMany = originalFindMembers;
   mock.restoreAll();
 });
 after(async () => {
@@ -70,12 +72,13 @@ test("creates the JWT user's OWNER membership and ignores ownership supplied in 
   const household = { id: "H1", name: "Praveen's Home", members: [{ id: "M1", userId: "U1", householdId: "H1", role: "OWNER" }] };
   const write = mockCreate( async (args) => {
     assert.equal(args.data.name, "Praveen's Home");
+    assert.equal(args.data.createdBy.connect.id, "U1");
     assert.equal(args.data.members.create.user.connect.id, "U1");
     assert.equal(args.data.members.create.role, "OWNER");
     assert.equal(args.data.id, undefined);
     return household;
   });
-  const response = await post({ name: "  Praveen's Home  ", userId: "attacker", role: "MEMBER", id: "injected", members: [{ userId: "attacker" }] });
+  const response = await post({ name: "  Praveen's Home  ", userId: "attacker", createdById: "attacker", createdBy: { connect: { id: "attacker" } }, role: "MEMBER", id: "injected", members: [{ userId: "attacker" }] });
   assert.equal(response.status, 201);
   assert.deepEqual((await response.json()).household, household);
   assert.equal(write.mock.callCount(), 1);
@@ -98,3 +101,68 @@ test("returns a generic 500 without exposing database errors", async () => {
   assert.deepEqual(await response.json(), { message: "Failed to create household" });
 });
 
+
+test("returns 409 for a duplicate household name", async () => {
+  mockCreate(async () => {
+    throw new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+      code: "P2002", clientVersion: "7.10.0", meta: { target: ["createdById", "name"] },
+    });
+  });
+  const response = await post({ name: "Home" });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { message: "You already have a household with this name" });
+});
+
+
+test("household listing requires a valid token before querying", async () => {
+  const read = mock.fn(async () => []);
+  prisma.householdMember.findMany = read;
+  for (const authorization of [null, "Bearer invalid"]) {
+    const response = await fetch(url, { headers: authorization ? { Authorization: authorization } : {} });
+    assert.equal(response.status, 401);
+    await response.json();
+  }
+  assert.equal(read.mock.callCount(), 0);
+});
+
+test("lists JWT user's memberships with their role, including households they did not create", async () => {
+  const createdAt = new Date("2026-09-01T00:00:00Z");
+  prisma.householdMember.findMany = mock.fn(async (args) => {
+    assert.deepEqual(args.where, { userId: "U1" });
+    assert.deepEqual(args.select, {
+      role: true,
+      household: { select: { id: true, name: true, createdAt: true } },
+    });
+    assert.deepEqual(args.orderBy, [{ household: { createdAt: "desc" } }, { householdId: "asc" }]);
+    return [
+      { role: "OWNER", household: { id: "H1", name: "My home", createdAt } },
+      { role: "ADMIN", household: { id: "H2", name: "Shared home", createdAt } },
+      { role: "MEMBER", household: { id: "H3", name: "Family home", createdAt } },
+    ];
+  });
+  const response = await fetch(`${url}?userId=other-user`, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    message: "Households fetched successfully",
+    households: [
+      { id: "H1", name: "My home", createdAt: createdAt.toISOString(), role: "OWNER" },
+      { id: "H2", name: "Shared home", createdAt: createdAt.toISOString(), role: "ADMIN" },
+      { id: "H3", name: "Family home", createdAt: createdAt.toISOString(), role: "MEMBER" },
+    ],
+  });
+});
+
+test("household listing returns an empty array when the user has no memberships", async () => {
+  prisma.householdMember.findMany = mock.fn(async () => []);
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { message: "Households fetched successfully", households: [] });
+});
+
+test("household listing hides unexpected database errors", async () => {
+  mock.method(console, "error", () => {});
+  prisma.householdMember.findMany = mock.fn(async () => { throw new Error("Private database details"); });
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), { message: "Failed to fetch households" });
+});
