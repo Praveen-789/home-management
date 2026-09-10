@@ -1,6 +1,6 @@
 import { Prisma } from "../../generated/prisma/client.js";
-import prisma from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
+import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
 import {
   requireHouseholdMember,
   requireManageableRole,
@@ -8,6 +8,9 @@ import {
 } from "./household-access.service.js";
 
 export type AssignableRole = "ADMIN" | "MEMBER";
+
+// The user to add, identified by ID or by the email they registered with.
+export type MemberTarget = { userId: string } | { email: string };
 
 // Fields returned to the controller. User passwords are never selected.
 const memberSelect = {
@@ -40,15 +43,16 @@ export async function listHouseholdMembers(
 export async function addHouseholdMember(
   householdId: string,
   requesterId: string,
-  userId: string,
+  target: MemberTarget,
   role: AssignableRole,
 ) {
   return withMembershipTransaction(async (tx) => {
     const requester = await requireHouseholdMember(tx, householdId, requesterId);
     requireManageableRole(requester.role, role);
 
+    // Email is unique, so either lookup resolves to at most one user.
     const user = await tx.user.findUnique({
-      where: { id: userId },
+      where: "userId" in target ? { id: target.userId } : { email: target.email },
       select: { id: true },
     });
 
@@ -56,6 +60,7 @@ export async function addHouseholdMember(
       throw new AppError("User not found", 404);
     }
 
+    const userId = user.id;
     const existingMember = await tx.householdMember.findUnique({
       where: { userId_householdId: { userId, householdId } },
     });
@@ -135,37 +140,12 @@ async function requireTargetMember(
 }
 
 // Shared transaction handling. Result preserves the return type of each operation.
-async function withMembershipTransaction<Result>(
+const membershipMessages: TransactionMessages = {
+  conflict: "User is already a household member",
+  missing: "User or household member no longer exists",
+  retriesExhausted: "Membership changed concurrently; please retry",
+};
+
+const withMembershipTransaction = <Result>(
   operation: (tx: Prisma.TransactionClient) => Promise<Result>,
-): Promise<Result> {
-  const maxAttempts = 3;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await prisma.$transaction(operation, {
-        isolationLevel: "Serializable",
-      });
-    } catch (error) {
-      if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {
-        throw error;
-      }
-
-      // A conflict retries the whole operation, including permission checks.
-      if (error.code === "P2034") {
-        continue;
-      }
-
-      if (error.code === "P2002") {
-        throw new AppError("User is already a household member", 409);
-      }
-
-      if (error.code === "P2025" || error.code === "P2003") {
-        throw new AppError("User or household member no longer exists", 404);
-      }
-
-      throw error;
-    }
-  }
-
-  throw new AppError("Membership changed concurrently; please retry", 409);
-}
+): Promise<Result> => withSerializableTransaction(operation, membershipMessages);

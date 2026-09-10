@@ -104,7 +104,7 @@ for (const actor of ['OWNER', 'ADMIN', 'MEMBER']) {
 }
 test('validates bodies before accessing the database', async () => {
   const tx = setup();
-  for (const body of [undefined, {}, { userId: '' }, { userId: 1 }, { userId: 'target', role: 'OWNER' }, { userId: 'target', role: null }]) {
+  for (const body of [undefined, {}, { userId: '' }, { userId: 1 }, { userId: 'target', role: 'OWNER' }, { userId: 'target', role: null }, { email: '' }, { email: 42 }, { email: 'target@example.com', role: 'OWNER' }, { userId: 'target', email: 'target@example.com' }]) {
     assert.equal((await request('POST', body)).status, 400);
   }
   for (const body of [undefined, {}, { role: 'OWNER' }, { role: 'member' }, { role: [] }]) {
@@ -116,6 +116,37 @@ test('add defaults to MEMBER and ignores extra properties', async () => {
   setup('ADMIN', 'MEMBER', false);
   assert.equal((await request('POST', { userId: 'target', householdId: 'other', requesterId: 'owner' })).status, 201);
   assert.deepEqual(db.householdMember.create.mock.calls[0].arguments[0].data, { householdId: 'home', userId: 'target', role: 'MEMBER' });
+});
+test('add explains a missing or doubled target', async () => {
+  const tx = setup();
+  assert.deepEqual((await request('POST', {})).body, { message: 'User ID or email address is required' });
+  assert.deepEqual((await request('POST', { email: '   ' })).body, { message: 'Email address is required' });
+  assert.deepEqual((await request('POST', { userId: 'target', email: 'target@example.com' })).body, { message: 'Provide either a user ID or an email address, not both' });
+  assert.equal(tx.mock.callCount(), 0);
+});
+test('add resolves a trimmed email to the registered user before creating membership', async () => {
+  setup('OWNER', 'MEMBER', false);
+  db.user.findUnique = mock.fn(async ({ where, select }) => {
+    assert.deepEqual(where, { email: 'target@example.com' });
+    assert.deepEqual(select, { id: true });
+    return { id: 'target' };
+  });
+  assert.deepEqual(await request('POST', { email: ' target@example.com ', role: 'ADMIN' }), { status: 201, body: { message: 'Household member added successfully', member } });
+  assert.equal(db.user.findUnique.mock.callCount(), 1);
+  assert.deepEqual(db.householdMember.create.mock.calls[0].arguments[0].data, { householdId: 'home', userId: 'target', role: 'ADMIN' });
+});
+test('add by email checks permissions before looking the user up', async () => {
+  setup('ADMIN', 'MEMBER', false);
+  assert.equal((await request('POST', { email: 'target@example.com', role: 'ADMIN' })).status, 403);
+  assert.equal(db.user.findUnique.mock.callCount(), 0);
+  assert.equal(db.householdMember.create.mock.callCount(), 0);
+});
+test('add by email returns 404 for unregistered emails and 409 for existing members', async () => {
+  setup();
+  assert.equal((await request('POST', { email: 'target@example.com' })).status, 409);
+  db.user.findUnique = mock.fn(async () => null);
+  assert.equal((await request('POST', { email: 'unknown@example.com' })).status, 404);
+  assert.equal(db.householdMember.create.mock.callCount(), 0);
 });
 test('missing user returns 404 and existing membership returns 409', async () => {
   setup();

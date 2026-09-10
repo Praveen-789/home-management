@@ -18,6 +18,18 @@ enum HouseholdRole {
   MEMBER
 }
 
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 model User {
   id        String   @id @default(uuid())
   name      String
@@ -27,6 +39,8 @@ model User {
 
   memberships       HouseholdMember[]
   createdHouseholds Household[]       @relation("HouseholdCreator")
+  createdTasks      Task[]            @relation("TaskCreator")
+  assignedTasks     Task[]            @relation("TaskAssignee")
 }
 
 model Household {
@@ -37,6 +51,7 @@ model Household {
   createdAt DateTime @default(now())
 
   members HouseholdMember[]
+  tasks   Task[]
 
   @@unique([createdById, name])
 }
@@ -52,4 +67,25 @@ model HouseholdMember {
   household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
 
   @@unique([userId, householdId])
+}
+
+model Task {
+  id           String       @id @default(uuid())
+  title        String
+  description  String?
+  status       TaskStatus   @default(TODO)
+  priority     TaskPriority @default(MEDIUM)
+  dueDate      DateTime?
+  householdId  String
+  createdById  String
+  assignedToId String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  household  Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  createdBy  User      @relation("TaskCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  assignedTo User?     @relation("TaskAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([householdId, status])
+  @@index([assignedToId])
 }

@@ -255,6 +255,9 @@ The current automated HTTP tests cover household authentication, input validatio
 - [Authentication middleware](src/middleware/auth.middleware.ts)
 - [Household controller](src/controllers/household.controller.ts)
 - [Household service](src/services/household.service.ts)
+- [Task controller](src/controllers/task.controller.ts)
+- [Task service](src/services/task.service.ts)
+- [Task routes](src/routes/task.routes.ts)
 - [Prisma schema](prisma/schema.prisma)
 
 ## Creator uniqueness migration
@@ -275,11 +278,11 @@ All endpoints require a Bearer token and the requester must belong to the househ
 | Method | Path | Body | Success |
 | --- | --- | --- | --- |
 | GET | `/api/households/:householdId/members` | None | 200 `{ message, members }` |
-| POST | `/api/households/:householdId/members` | `{ "userId": "existing-user-id", "role": "MEMBER" }` | 201 `{ message, member }` |
+| POST | `/api/households/:householdId/members` | `{ "email": "member@example.com", "role": "MEMBER" }` or `{ "userId": "existing-user-id", "role": "MEMBER" }` | 201 `{ message, member }` |
 | PATCH | `/api/households/:householdId/members/:userId` | `{ "role": "ADMIN" }` | 200 `{ message, member }` |
 | DELETE | `/api/households/:householdId/members/:userId` | None | 200 `{ message }` |
 
-POST defaults an omitted role to `MEMBER`. PATCH requires a role. Only `ADMIN` and `MEMBER` are assignable. IDs must be nonblank strings. Extra body properties are ignored. The `:userId` parameter is a User ID, not a membership ID.
+POST identifies the user to add by exactly one of `email` or `userId`. The email is trimmed and then matched exactly against the address the user registered with (case-sensitive, like login). Sending neither returns `400` `User ID or email address is required`; sending both returns `400` `Provide either a user ID or an email address, not both`; a blank value returns `400` `Email address is required` or `User ID is required`. An unregistered email or unknown ID returns `404` `User not found`. Permission checks run before the lookup, so a requester who may not assign the role learns nothing about whether the email is registered. POST defaults an omitted role to `MEMBER`. PATCH requires a role. Only `ADMIN` and `MEMBER` are assignable. IDs must be nonblank strings. Extra body properties are ignored. The `:userId` parameter is a User ID, not a membership ID.
 
 GET returns:
 
@@ -341,3 +344,98 @@ Returns all households the requester belongs to, including households created by
 ```
 
 A user with no memberships receives `200` with `households: []`. No other members or user details are returned. Invalid/missing tokens return `401`; unexpected failures return `500` with `Failed to fetch households`. A valid token for a deleted user also yields an empty list because they have no memberships.
+
+## Tasks
+
+All endpoints require a Bearer token and the requester must belong to the household. A task belongs to exactly one household and is reachable only through that household's path.
+
+| Method | Path | Body | Success |
+| --- | --- | --- | --- |
+| GET | `/api/households/:householdId/tasks` | None; optional query `status`, `page`, `limit` | 200 `{ message, tasks, pagination }` |
+| POST | `/api/households/:householdId/tasks` | `{ "title": "Buy groceries", "description": "Milk and eggs", "status": "TODO", "priority": "HIGH", "dueDate": "2026-09-10T18:00:00.000Z", "assignedToId": "user-id" }` | 201 `{ message, task }` |
+| GET | `/api/households/:householdId/tasks/:taskId` | None | 200 `{ message, task }` |
+| PATCH | `/api/households/:householdId/tasks/:taskId` | Any subset of the POST fields | 200 `{ message, task }` |
+| DELETE | `/api/households/:householdId/tasks/:taskId` | None | 200 `{ message }` |
+
+### Fields
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `title` | string | Required on POST. Trimmed; blank values return `400` `Title is required`. |
+| `description` | string or null | Optional. Trimmed; a blank string is stored as `null`. |
+| `status` | `TODO`, `IN_PROGRESS`, `DONE` | Optional. Defaults to `TODO`. |
+| `priority` | `LOW`, `MEDIUM`, `HIGH` | Optional. Defaults to `MEDIUM`. |
+| `dueDate` | ISO 8601 string or null | Optional. Parsed by JavaScript `Date`; unparseable values return `400`. |
+| `assignedToId` | User ID or null | Optional. The user must belong to the household, otherwise `400` `Assignee must be a member of this household`. |
+
+PATCH accepts any subset of these fields and changes only what is sent. Send `null` to clear `description`, `dueDate`, or `assignedToId`. A PATCH containing none of these fields returns `400`. Unknown properties are ignored everywhere. The household comes from the URL and the creator from the token, so `householdId`, `createdById`, and `id` in a body are ignored.
+
+### Response shape
+
+```json
+{
+  "message": "Task fetched successfully",
+  "task": {
+    "id": "task-id",
+    "householdId": "household-id",
+    "title": "Buy groceries",
+    "description": "Milk and eggs",
+    "status": "TODO",
+    "priority": "HIGH",
+    "dueDate": "2026-09-10T18:00:00.000Z",
+    "createdAt": "2026-09-08T07:00:00.000Z",
+    "updatedAt": "2026-09-08T07:00:00.000Z",
+    "createdBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" },
+    "assignedTo": { "id": "other-user-id", "name": "Ravi", "email": "ravi@example.com" }
+  }
+}
+```
+
+### Listing, filtering, and pagination
+
+The list endpoint accepts optional query parameters:
+
+| Parameter | Type | Default | Rules |
+| --- | --- | --- | --- |
+| `status` | `TODO`, `IN_PROGRESS`, `DONE` | none | Return only tasks with this status. |
+| `page` | integer | 1 | 1-based page number, at most 100000. |
+| `limit` | integer | 20 | Tasks per page, 1 to 100. |
+
+Example: `GET /api/households/:householdId/tasks?status=TODO&page=2&limit=10`. Values must be plain digits or an exact status name. Anything else, including a repeated parameter, returns `400` with the rule in the message.
+
+Tasks are ordered by due date (soonest first, undated tasks last), then creation time (newest first), then ID, so pages stay stable while no task changes. Each entry has the task shape shown above, and the response adds the page details:
+
+```json
+{
+  "message": "Tasks fetched successfully",
+  "tasks": [{ "id": "task-id", "title": "Buy groceries", "status": "TODO" }],
+  "pagination": { "page": 2, "limit": 10, "total": 23, "totalPages": 3 }
+}
+```
+
+`total` counts every task matching the filter, not only those on the page, and `totalPages` is `0` when nothing matches. A page past the end returns `200` with an empty `tasks` array. Passwords are never selected.
+
+### Permissions
+
+| Action | OWNER / ADMIN | MEMBER who created the task | MEMBER assigned to the task | Other MEMBER |
+| --- | --- | --- | --- | --- |
+| List and view | Yes | Yes | Yes | Yes |
+| Create | Yes | Yes | Yes | Yes |
+| Update any field | Yes | Yes | No | No |
+| Update `status` only | Yes | Yes | Yes | No |
+| Delete | Yes | Yes | No | No |
+
+The `status`-only rule lets an assignee mark their own chore done without renaming, reassigning, or deleting it. An assignee sending any other field receives `403` `Assignees can only update the task status`. A member with no relation to the task receives `403` `You can only update tasks you created or are assigned to` on PATCH and `403` `You can only manage tasks you created` on DELETE.
+
+### Errors
+
+Errors use `{ "message": "..." }`: `400` for invalid input or a non-member assignee, `401` for missing or invalid authentication, `403` for prohibited updates and deletes, `404` `Household not found or access denied` for missing or inaccessible households, `404` `Task not found` for a missing task in an accessible household, `404` `Household, member, or task no longer exists` when a referenced row disappears mid-write, `409` `Tasks changed concurrently; please retry` after three serialization retries, and `500` `Task operation failed` for unexpected failures.
+
+Task operations run in serializable transactions with the same retry behavior as household members, through the shared wrapper in `src/lib/transaction.ts`. This module requires the `add_task` migration:
+
+```sh
+npx prisma migrate deploy --config prisma7.config.ts
+npx prisma generate --config prisma7.config.ts
+```
+
+Task HTTP tests in `tests/task.test.mjs` cover authentication, household access, list filtering and pagination, every role and ownership combination for update and delete, the status-only assignee rule, validation messages, assignee membership checks, null clearing, missing tasks, and simulated transaction conflicts. They mock Prisma.

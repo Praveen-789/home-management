@@ -1,12 +1,6 @@
-import type { Response } from "express";
-import type { AuthenticatedRequest } from "../middleware/auth.middleware.js";
 import { AppError } from "../lib/errors.js";
-import { addHouseholdMember, listHouseholdMembers, removeHouseholdMember, updateHouseholdMember, type AssignableRole } from "../services/household-member.service.js";
-
-const readId = (value: unknown, label: string): string => {
-  if (typeof value !== "string" || !value.trim()) throw new AppError(`${label} is required`, 400);
-  return value.trim();
-};
+import { handleHouseholdRequest, readId } from "../lib/controller.js";
+import { addHouseholdMember, listHouseholdMembers, removeHouseholdMember, updateHouseholdMember, type AssignableRole, type MemberTarget } from "../services/household-member.service.js";
 
 const readRole = (value: unknown, defaultMember = false): AssignableRole => {
   if (value === undefined && defaultMember) return "MEMBER";
@@ -14,17 +8,16 @@ const readRole = (value: unknown, defaultMember = false): AssignableRole => {
   return value;
 };
 
-type Operation = (req: AuthenticatedRequest, res: Response, householdId: string, requesterId: string) => Promise<unknown>;
-const handle = (operation: Operation) => async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    if (!req.userId) throw new AppError("Authentication is required", 401);
-    return await operation(req, res, readId(req.params["householdId"], "Household ID"), req.userId);
-  } catch (error) {
-    if (error instanceof AppError) return res.status(error.statusCode).json({ message: error.message });
-    console.error(error);
-    return res.status(500).json({ message: "Household member operation failed" });
-  }
+// Exactly one of userId or email is accepted so a request never names two different users.
+const readTarget = (body: unknown): MemberTarget => {
+  const { userId, email } = (body ?? {}) as { userId?: unknown; email?: unknown };
+  if (userId !== undefined && email !== undefined) throw new AppError("Provide either a user ID or an email address, not both", 400);
+  if (email !== undefined) return { email: readId(email, "Email address") };
+  if (userId !== undefined) return { userId: readId(userId, "User ID") };
+  throw new AppError("User ID or email address is required", 400);
 };
+
+const handle = handleHouseholdRequest("Household member operation failed");
 
 export const list = handle(async (_req, res, householdId, requesterId) => {
   const members = await listHouseholdMembers(householdId, requesterId);
@@ -32,7 +25,7 @@ export const list = handle(async (_req, res, householdId, requesterId) => {
 });
 
 export const add = handle(async (req, res, householdId, requesterId) => {
-  const member = await addHouseholdMember(householdId, requesterId, readId(req.body?.userId, "User ID"), readRole(req.body?.role, true));
+  const member = await addHouseholdMember(householdId, requesterId, readTarget(req.body), readRole(req.body?.role, true));
   return res.status(201).json({ message: "Household member added successfully", member });
 });
 
