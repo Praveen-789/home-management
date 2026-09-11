@@ -1,36 +1,12 @@
 import { TaskPriority, TaskStatus } from "../../generated/prisma/client.js";
 import { AppError } from "../lib/errors.js";
-import { handleHouseholdRequest, readId } from "../lib/controller.js";
+import { handleHouseholdRequest, readEnum, readId, readNullableDate, readNullableId, readNullableText, readPagination } from "../lib/controller.js";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.js";
-import { createTask, deleteTask, getTask, listTasks, updateTask, type TaskInput, type TaskListQuery, type TaskPatch } from "../services/task.service.js";
+import { addTaskImage, createTask, deleteTask, getTask, listTasks, removeTaskImage, updateTask, type TaskInput, type TaskListQuery, type TaskPatch } from "../services/task.service.js";
+import { readImageId, readImageInput } from "./image.controller.js";
 
 const STATUSES = Object.values(TaskStatus);
 const PRIORITIES = Object.values(TaskPriority);
-const DEFAULT_LIMIT = 20;
-const MAX_LIMIT = 100;
-const MAX_PAGE = 100_000;
-
-const readEnum = <Value extends string>(value: unknown, allowed: readonly Value[], label: string): Value => {
-  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) return value as Value;
-  throw new AppError(`${label} must be one of ${allowed.join(", ")}`, 400);
-};
-
-// Optional text: null clears it, and a blank string is treated the same way.
-const readNullableText = (value: unknown, label: string): string | null => {
-  if (value === null) return null;
-  if (typeof value !== "string") throw new AppError(`${label} must be a string or null`, 400);
-  return value.trim() || null;
-};
-
-const readNullableDate = (value: unknown, label: string): Date | null => {
-  if (value === null) return null;
-  const date = typeof value === "string" ? new Date(value) : new Date(Number.NaN);
-  if (Number.isNaN(date.getTime())) throw new AppError(`${label} must be an ISO 8601 date string or null`, 400);
-  return date;
-};
-
-const readNullableId = (value: unknown, label: string): string | null =>
-  value === null ? null : readId(value, label);
 
 // Reads only the recognized fields that are present, so unknown properties are
 // ignored and absent ones are never sent to Prisma. Nothing here can set the
@@ -61,21 +37,8 @@ const readUpdateInput = (body: unknown): TaskPatch => {
   return patch;
 };
 
-// Query-string numbers arrive as strings. Only plain digits are accepted, so
-// "1.5", "-1", and a repeated parameter (which Express turns into an array)
-// are rejected instead of being silently coerced.
-const readInteger = (value: unknown, label: string, min: number, max: number, fallback: number): number => {
-  if (value === undefined) return fallback;
-  const parsed = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : Number.NaN;
-  if (!(parsed >= min && parsed <= max)) throw new AppError(`${label} must be an integer between ${min} and ${max}`, 400);
-  return parsed;
-};
-
 const readListQuery = (query: Record<string, unknown>): TaskListQuery => {
-  const listQuery: TaskListQuery = {
-    page: readInteger(query["page"], "Page", 1, MAX_PAGE, 1),
-    limit: readInteger(query["limit"], "Limit", 1, MAX_LIMIT, DEFAULT_LIMIT),
-  };
+  const listQuery: TaskListQuery = readPagination(query);
   if (query["status"] !== undefined) listQuery.status = readEnum(query["status"], STATUSES, "Status");
   return listQuery;
 };
@@ -107,4 +70,14 @@ export const update = handle(async (req, res, householdId, requesterId) => {
 export const remove = handle(async (req, res, householdId, requesterId) => {
   await deleteTask(householdId, requesterId, readTaskId(req));
   return res.status(200).json({ message: "Task deleted successfully" });
+});
+
+export const addImage = handle(async (req, res, householdId, requesterId) => {
+  const task = await addTaskImage(householdId, requesterId, readTaskId(req), readImageInput(req.body));
+  return res.status(201).json({ message: "Image added successfully", task });
+});
+
+export const removeImage = handle(async (req, res, householdId, requesterId) => {
+  const task = await removeTaskImage(householdId, requesterId, readTaskId(req), readImageId(req));
+  return res.status(200).json({ message: "Image removed successfully", task });
 });

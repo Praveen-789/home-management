@@ -11,9 +11,10 @@ const originalTransaction = prisma.$transaction;
 let server, base, db;
 const token = signToken({ userId: 'actor', email: 'actor@example.com' });
 const userSelect = { select: { id: true, name: true, email: true } };
-const taskSelect = { id: true, householdId: true, title: true, description: true, status: true, priority: true, dueDate: true, createdAt: true, updatedAt: true, createdBy: userSelect, assignedTo: userSelect };
+const imageSelect = { id: true, publicId: true, width: true, height: true, bytes: true, format: true, createdAt: true, uploadedBy: userSelect };
+const taskSelect = { id: true, householdId: true, title: true, description: true, status: true, priority: true, dueDate: true, createdAt: true, updatedAt: true, createdBy: userSelect, assignedTo: userSelect, images: { select: imageSelect, orderBy: { createdAt: 'asc' } } };
 const taskOrder = [{ dueDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'asc' }];
-const task = { id: 'task-1', householdId: 'home', title: 'Buy groceries', description: null, status: 'TODO', priority: 'MEDIUM', dueDate: null, createdAt: '2026-09-08T00:00:00.000Z', updatedAt: '2026-09-08T00:00:00.000Z', createdBy: { id: 'creator', name: 'Creator', email: 'creator@example.com' }, assignedTo: null };
+const task = { id: 'task-1', householdId: 'home', title: 'Buy groceries', description: null, status: 'TODO', priority: 'MEDIUM', dueDate: null, createdAt: '2026-09-08T00:00:00.000Z', updatedAt: '2026-09-08T00:00:00.000Z', createdBy: { id: 'creator', name: 'Creator', email: 'creator@example.com' }, assignedTo: null, images: [] };
 const validBody = { title: 'Buy groceries' };
 before(async () => {
   server = app.listen(0, '127.0.0.1');
@@ -39,6 +40,7 @@ function setup({ actor = 'OWNER', createdById = 'creator', assignedToId = 'assig
         return assigneeIsMember ? { id: 'assignee-membership' } : null;
       }),
     },
+    image: { findMany: mock.fn(async () => []) },
     task: {
       findMany: mock.fn(async ({ where, select, orderBy, skip, take }) => {
         assert.equal(where.householdId, 'home');

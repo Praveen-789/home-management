@@ -2,6 +2,8 @@ import type { HouseholdRole, Prisma, TaskPriority, TaskStatus } from "../../gene
 import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
 import { requireHouseholdMember } from "./household-access.service.js";
+import { attachImage, detachImage, imagePublicIds, imagesSelect, withImages, type ImageInput } from "./image.service.js";
+import { imageStorage } from "../lib/cloudinary.js";
 
 // Fields a client may set. Nullable fields accept null to clear them.
 export type TaskInput = {
@@ -38,6 +40,7 @@ const taskSelect = {
   updatedAt: true,
   createdBy: userSummary,
   assignedTo: userSummary,
+  images: imagesSelect,
 } satisfies Prisma.TaskSelect;
 
 // Dated tasks first, soonest due first; undated tasks follow, newest first.
@@ -76,7 +79,7 @@ export async function listTasks(householdId: string, requesterId: string, query:
     
 
     return {
-      tasks,
+      tasks: tasks.map(withImages),
       pagination: {
         page: query.page,
         limit: query.limit,
@@ -100,7 +103,7 @@ export async function getTask(householdId: string, requesterId: string, taskId: 
       throw new AppError("Task not found", 404);
     }
 
-    return task;
+    return withImages(task);
   });
 }
 
@@ -113,10 +116,11 @@ export async function createTask(householdId: string, requesterId: string, input
     }
 
     // The household comes from the URL and the creator from the token, never the body.
-    return tx.task.create({
+    const task = await tx.task.create({
       data: { ...input, householdId, createdById: requesterId },
       select: taskSelect,
     });
+    return withImages(task);
   });
 }
 
@@ -135,22 +139,62 @@ export async function updateTask(
       await requireAssignee(tx, householdId, patch.assignedToId);
     }
 
-    return tx.task.update({
+    const updated = await tx.task.update({
       where: { id: task.id, householdId },
       data: patch,
       select: taskSelect,
     });
+    return withImages(updated);
   });
 }
 
 export async function deleteTask(householdId: string, requesterId: string, taskId: string) {
-  return withTaskTransaction(async (tx) => {
+  const publicIds = await withTaskTransaction(async (tx) => {
     const requester = await requireHouseholdMember(tx, householdId, requesterId);
     const task = await requireTask(tx, householdId, taskId);
     requireTaskManagement(requester.role, requesterId, task);
 
+    // Collected before the delete cascades the image rows away.
+    const publicIds = await imagePublicIds(tx, { taskId: task.id });
     await tx.task.delete({ where: { id: task.id, householdId } });
+    return publicIds;
   });
+  if (publicIds.length > 0) void imageStorage.destroy(publicIds);
+}
+
+// Photos may be added and removed by anyone who may change the task's status: managers and the
+// assignee, since either may want to show the work. The task is returned with its images.
+export async function addTaskImage(householdId: string, requesterId: string, taskId: string, input: ImageInput) {
+  return withTaskTransaction(async (tx) => {
+    const requester = await requireHouseholdMember(tx, householdId, requesterId);
+    const task = await requireTask(tx, householdId, taskId);
+    requireTaskImageAccess(requester.role, requesterId, task);
+
+    await attachImage(tx, householdId, requesterId, { taskId: task.id }, input);
+    return loadTask(tx, householdId, task.id);
+  });
+}
+
+export async function removeTaskImage(householdId: string, requesterId: string, taskId: string, imageId: string) {
+  const { task, publicId } = await withTaskTransaction(async (tx) => {
+    const requester = await requireHouseholdMember(tx, householdId, requesterId);
+    const task = await requireTask(tx, householdId, taskId);
+    requireTaskImageAccess(requester.role, requesterId, task);
+
+    const publicId = await detachImage(tx, { taskId: task.id }, imageId);
+    return { task: await loadTask(tx, householdId, task.id), publicId };
+  });
+  void imageStorage.destroy([publicId]);
+  return task;
+}
+
+// The task as the API returns it, fetched again after its images changed.
+async function loadTask(tx: Prisma.TransactionClient, householdId: string, taskId: string) {
+  const task = await tx.task.findFirst({ where: { id: taskId, householdId }, select: taskSelect });
+  if (!task) {
+    throw new AppError("Task not found", 404);
+  }
+  return withImages(task);
 }
 
 // The columns permission decisions depend on.
@@ -186,6 +230,12 @@ const requireTaskEdit = (
       : "You can only update tasks you created or are assigned to",
     403,
   );
+};
+
+// Managers and the assignee may attach and remove photos, the same people who may change the status.
+const requireTaskImageAccess = (role: HouseholdRole, requesterId: string, task: TaskOwnership) => {
+  if (canManageTask(role, requesterId, task) || task.assignedToId === requesterId) return;
+  throw new AppError("You can only manage images on tasks you created or are assigned to", 403);
 };
 
 async function requireTask(tx: Prisma.TransactionClient, householdId: string, taskId: string) {

@@ -18,6 +18,6 @@
 
     "noEmit": true
   },
-  "include": ["prisma7.config.ts", "src/**/*.ts"],
+  "include": ["prisma.config.ts", "src/**/*.ts"],
   "exclude": ["node_modules", "generated"]
 }

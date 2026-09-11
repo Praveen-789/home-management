@@ -265,8 +265,8 @@ The current automated HTTP tests cover household authentication, input validatio
 Apply the migration before running the updated application:
 
 ```sh
-npx prisma migrate deploy --config prisma7.config.ts
-npx prisma generate --config prisma7.config.ts
+npx prisma migrate deploy
+npx prisma generate
 ```
 
 Existing households are assigned their sole OWNER as creator. The migration stops without changing records if any household has zero/multiple owners or if duplicate names exist for an owner. Resolve these records before applying it; the migration does not delete or rename households. Creator references use `onDelete: Restrict`, preventing deletion of a user while households still reference them as creator.
@@ -434,8 +434,219 @@ Errors use `{ "message": "..." }`: `400` for invalid input or a non-member assig
 Task operations run in serializable transactions with the same retry behavior as household members, through the shared wrapper in `src/lib/transaction.ts`. This module requires the `add_task` migration:
 
 ```sh
-npx prisma migrate deploy --config prisma7.config.ts
-npx prisma generate --config prisma7.config.ts
+npx prisma migrate deploy
+npx prisma generate
 ```
 
 Task HTTP tests in `tests/task.test.mjs` cover authentication, household access, list filtering and pagination, every role and ownership combination for update and delete, the status-only assignee rule, validation messages, assignee membership checks, null clearing, missing tasks, and simulated transaction conflicts. They mock Prisma.
+
+## Expenses
+
+All endpoints require a Bearer token and the requester must belong to the household. An expense belongs to exactly one household. It may point at a task in the same household, or stand alone (rent, a utility bill). A task never needs an expense, a task may have several, and deleting a task keeps its expenses and clears their `task` link.
+
+| Method | Path | Body | Success |
+| --- | --- | --- | --- |
+| GET | `/api/households/:householdId/expenses` | None; optional query `category`, `paidById`, `taskId`, `from`, `to`, `page`, `limit` | 200 `{ message, expenses, pagination }` |
+| GET | `/api/households/:householdId/expenses/summary` | None; optional query `category`, `paidById`, `taskId`, `from`, `to` | 200 `{ message, summary }` |
+| POST | `/api/households/:householdId/expenses` | `{ "amount": 1250.5, "description": "Weekly groceries", "category": "GROCERIES", "paidById": "user-id", "taskId": "task-id" }` | 201 `{ message, expense }` |
+| GET | `/api/households/:householdId/expenses/:expenseId` | None | 200 `{ message, expense }` |
+| PATCH | `/api/households/:householdId/expenses/:expenseId` | Any subset of the POST fields | 200 `{ message, expense }` |
+| DELETE | `/api/households/:householdId/expenses/:expenseId` | None | 200 `{ message }` |
+
+### Fields
+
+| Field | Type | Rules |
+| --- | --- | --- |
+| `amount` | number or numeric string | Required on POST. Positive, below 10000000000, at most 2 decimal places. Validated as text so nothing passes through a float: `1250`, `1250.5`, and `"1250.50"` are all stored as `1250.50`. Anything else returns `400` `Amount must be a positive number below 10000000000 with at most 2 decimal places`. |
+| `description` | string or null | Optional. Trimmed; a blank string is stored as `null`. |
+| `category` | `GROCERIES`, `UTILITIES`, `RENT`, `MAINTENANCE`, `TRANSPORT`, `HEALTH`, `ENTERTAINMENT`, `OTHER` | Optional. Defaults to `OTHER`. |
+| `paidById` | User ID | Optional on POST, where it defaults to the requester. Cannot be `null`. The user must belong to the household, otherwise `400` `Payer must be a member of this household`. |
+| `taskId` | Task ID or null | Optional. The task must belong to the same household, otherwise `400` `Task must belong to this household`. |
+
+PATCH accepts any subset of these fields and changes only what is sent. Send `null` to clear `description` or `taskId`. A PATCH containing none of these fields returns `400`. Unknown properties are ignored everywhere. The household comes from the URL and the recorder from the token, so `householdId`, `createdById`, and `id` in a body are ignored.
+
+### Response shape
+
+`amount` is always a string with two decimal places, because the column is `numeric(12, 2)` and a JSON number could not represent it exactly. `task` is `null` for a standalone expense.
+
+```json
+{
+  "message": "Expense fetched successfully",
+  "expense": {
+    "id": "expense-id",
+    "householdId": "household-id",
+    "amount": "1250.50",
+    "description": "Weekly groceries",
+    "category": "GROCERIES",
+    "createdAt": "2026-09-10T07:00:00.000Z",
+    "updatedAt": "2026-09-10T07:00:00.000Z",
+    "paidBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" },
+    "createdBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" },
+    "task": { "id": "task-id", "title": "Buy groceries", "status": "DONE" }
+  }
+}
+```
+
+### Listing, filtering, and pagination
+
+The list endpoint accepts optional query parameters:
+
+| Parameter | Type | Default | Rules |
+| --- | --- | --- | --- |
+| `category` | one of the category values | none | Return only expenses in this category. |
+| `paidById` | User ID | none | Return only expenses this user paid. |
+| `taskId` | Task ID | none | Return only expenses linked to this task. |
+| `from` | ISO 8601 string | none | Return only expenses created at or after this instant. |
+| `to` | ISO 8601 string | none | Return only expenses created at or before this instant. Must not be before `from`, otherwise `400` `From must not be after to`. |
+| `page` | integer | 1 | 1-based page number, at most 100000. |
+| `limit` | integer | 20 | Expenses per page, 1 to 100. |
+
+Example: `GET /api/households/:householdId/expenses?category=GROCERIES&from=2026-09-01&to=2026-09-30T23:59:59.999Z&page=2&limit=10`. Values must be plain digits, an exact category name, a parseable date, or a non-blank ID. Anything else, including a repeated parameter, returns `400` with the rule in the message.
+
+Expenses are ordered by creation time (newest first), then ID, so pages stay stable while nothing changes. Each entry has the expense shape shown above, and the response adds the page details:
+
+```json
+{
+  "message": "Expenses fetched successfully",
+  "expenses": [{ "id": "expense-id", "amount": "1250.50", "category": "GROCERIES" }],
+  "pagination": { "page": 2, "limit": 10, "total": 23, "totalPages": 3 }
+}
+```
+
+`total` counts every expense matching the filter, not only those on the page, and `totalPages` is `0` when nothing matches.
+
+### Summary
+
+`GET /api/households/:householdId/expenses/summary` accepts the same filters as the list, minus `page` and `limit`, and returns totals computed by Postgres on the numeric column. Groups are ordered by total, largest first. With nothing matching, `total` is `"0.00"`, `count` is `0`, and both arrays are empty.
+
+```json
+{
+  "message": "Expense summary fetched successfully",
+  "summary": {
+    "total": "3450.00",
+    "count": 3,
+    "byCategory": [
+      { "category": "GROCERIES", "total": "2200.25", "count": 2 },
+      { "category": "RENT", "total": "1249.75", "count": 1 }
+    ],
+    "byPayer": [
+      { "paidBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }, "total": "3450.00", "count": 3 }
+    ]
+  }
+}
+```
+
+### Permissions
+
+| Action | OWNER / ADMIN | MEMBER who recorded or paid the expense | Other MEMBER |
+| --- | --- | --- | --- |
+| List, view, and summary | Yes | Yes | Yes |
+| Create | Yes | Yes | Yes |
+| Update | Yes | Yes | No |
+| Delete | Yes | Yes | No |
+
+Both the recorder and the payer can manage an expense, since someone may log a bill their partner paid and either of them may need to correct it. A member with no relation to the expense receives `403` `You can only manage expenses you recorded or paid`.
+
+### Errors
+
+Errors use `{ "message": "..." }`: `400` for invalid input, a non-member payer, or a task from another household, `401` for missing or invalid authentication, `403` for prohibited updates and deletes, `404` `Household not found or access denied` for missing or inaccessible households, `404` `Expense not found` for a missing expense in an accessible household, `404` `Household, member, task, or expense no longer exists` when a referenced row disappears mid-write, `409` `Expenses changed concurrently; please retry` after three serialization retries, and `500` `Expense operation failed` for unexpected failures.
+
+Expense operations run in serializable transactions with the same retry behavior as tasks, through the shared wrapper in `src/lib/transaction.ts`. This module requires the `add_expense` migration:
+
+```sh
+npx prisma migrate deploy
+npx prisma generate
+```
+
+Expense HTTP tests in `tests/expense.test.mjs` cover authentication, household access, list filtering including date ranges and pagination, the summary's database aggregation and payer lookup, amount validation and normalization, payer membership and task household checks, every role and ownership combination for update and delete, null clearing, missing expenses, and simulated transaction conflicts. They mock Prisma.
+
+## Images
+
+Tasks and expenses can carry up to 5 photos each. Files live in Cloudinary; Postgres stores only the Cloudinary public ID and what Cloudinary reported about the file. The app uploads straight to Cloudinary with a signature the server issues, so image bytes never pass through this API and the Cloudinary secret never leaves the server.
+
+| Method | Path | Body | Success |
+| --- | --- | --- | --- |
+| POST | `/api/households/:householdId/uploads` | None | 201 `{ message, upload }` |
+| POST | `/api/households/:householdId/tasks/:taskId/images` | `{ "publicId", "width", "height", "bytes", "format" }` | 201 `{ message, task }` |
+| DELETE | `/api/households/:householdId/tasks/:taskId/images/:imageId` | None | 200 `{ message, task }` |
+| POST | `/api/households/:householdId/expenses/:expenseId/images` | Same as for tasks | 201 `{ message, expense }` |
+| DELETE | `/api/households/:householdId/expenses/:expenseId/images/:imageId` | None | 200 `{ message, expense }` |
+
+### Upload flow
+
+1. `POST /uploads` as any member of the household. The response is a ticket:
+
+```json
+{
+  "message": "Upload authorized",
+  "upload": {
+    "uploadUrl": "https://api.cloudinary.com/v1_1/<cloud>/image/upload",
+    "fields": {
+      "timestamp": "1789000000",
+      "public_id": "homehub/households/<householdId>/<uuid>",
+      "asset_folder": "homehub/households/<householdId>",
+      "allowed_formats": "jpg,jpeg,png,webp,heic,heif",
+      "transformation": "c_limit,w_2000,h_2000",
+      "api_key": "…",
+      "signature": "…"
+    },
+    "publicId": "homehub/households/<householdId>/<uuid>",
+    "allowedFormats": ["jpg", "jpeg", "png", "webp", "heic", "heif"],
+    "expiresAt": "…"
+  }
+}
+```
+
+2. Send a multipart form to `uploadUrl` with every entry of `fields` exactly as given plus a `file` part. Cloudinary checks the signature (SHA-256 over the signed fields and the secret), refuses other formats, shrinks anything over 2000 pixels a side, and stores the file at `public_id`. Changing any signed field makes Cloudinary answer `401`. A ticket is good for one hour and one public ID.
+3. Post Cloudinary's reply to the task or expense: `publicId` (must equal the ticket's), `width`, `height`, `bytes` and `format`. The server checks that the public ID sits in the household's own folder, that it is not already attached, and that the parent has fewer than 5 images. The full task or expense comes back, images included.
+
+### Image shape
+
+Every task and expense response now includes `images`, oldest first:
+
+```json
+"images": [
+  {
+    "id": "image-id",
+    "url": "https://res.cloudinary.com/<cloud>/image/upload/f_auto,q_auto/homehub/households/<householdId>/<uuid>",
+    "thumbnailUrl": "https://res.cloudinary.com/<cloud>/image/upload/c_fill,g_auto,w_400,h_400,f_auto,q_auto/homehub/households/<householdId>/<uuid>",
+    "width": 1600,
+    "height": 1200,
+    "bytes": 345678,
+    "format": "jpg",
+    "createdAt": "2026-09-10T12:00:00.000Z",
+    "uploadedBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }
+  }
+]
+```
+
+Delivery URLs are public: anyone holding the exact link can view the image, and the random UUID is what keeps them unguessable. `f_auto,q_auto` lets Cloudinary pick the format and quality per device.
+
+### Permissions
+
+| Action | Who |
+| --- | --- |
+| Request an upload ticket | Any member |
+| Add or remove a task image | Owners, admins, the task's creator, and its assignee, the same people who may change its status |
+| Add or remove an expense image | Owners, admins, and whoever recorded or paid the expense |
+
+Refusals are `403` `You can only manage images on tasks you created or are assigned to` and `403` `You can only manage expenses you recorded or paid`.
+
+### Deletion
+
+Removing an image, deleting a task, or deleting an expense removes the rows inside the transaction and then asks Cloudinary to destroy the files. That call is best-effort: a Cloudinary failure is logged and never fails the request, so a file can occasionally outlive its row. Deleting a task keeps its expenses and their images.
+
+### Errors
+
+`400` for an invalid body, a public ID outside the household's folder (`Image does not belong to this household`), or a full parent (`At most 5 images can be attached`), `409` `This image is already attached`, `404` `Image not found`, and `503` `Image uploads are not configured on this server` when `CLOUDINARY_URL` is missing.
+
+### Configuration
+
+Set `CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>` in `.env` (and on the host when deploying). No upload preset is needed; the server signs the format and size policy itself. This module requires the `add_image` migration, which also adds a check constraint so an image belongs to exactly one task or one expense:
+
+```sh
+npx prisma migrate deploy
+npx prisma generate
+```
+
+Image HTTP tests in `tests/image.test.mjs` cover the ticket's fields and signature, folder checks, duplicate and limit rules, every role and ownership combination for tasks and expenses, body validation, and the Cloudinary cleanup after removals and parent deletes, with the Cloudinary SDK mocked.
