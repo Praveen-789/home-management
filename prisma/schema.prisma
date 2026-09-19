@@ -55,17 +55,19 @@ model User {
   paidExpenses      Expense[]         @relation("ExpensePayer")
   createdExpenses   Expense[]         @relation("ExpenseCreator")
   uploadedImages    Image[]
+  passwordResets    PasswordReset[]
+  notifications     Notification[]
 }
 
 model Household {
   createdById String
   createdBy   User     @relation("HouseholdCreator", fields: [createdById], references: [id], onDelete: Restrict)
-  id        String   @id @default(uuid())
-  name      String
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  name        String
+  createdAt   DateTime @default(now())
 
-  members HouseholdMember[]
-  tasks   Task[]
+  members  HouseholdMember[]
+  tasks    Task[]
   expenses Expense[]
   images   Image[]
 
@@ -158,4 +160,37 @@ model Image {
 
   @@index([taskId])
   @@index([expenseId])
+}
+
+// A one-time code for resetting a forgotten password. Only the SHA-256 hash is stored; the code
+// itself goes out by email. A code dies when used, when it expires, or after too many wrong tries.
+model PasswordReset {
+  id        String    @id @default(uuid())
+  userId    String
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+
+  type    String
+  title   String
+  message String
+  isRead  Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
 }

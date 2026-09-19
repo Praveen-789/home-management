@@ -650,3 +650,47 @@ npx prisma generate
 ```
 
 Image HTTP tests in `tests/image.test.mjs` cover the ticket's fields and signature, folder checks, duplicate and limit rules, every role and ownership combination for tasks and expenses, body validation, and the Cloudinary cleanup after removals and parent deletes, with the Cloudinary SDK mocked.
+
+## Forgot password
+
+A person who cannot sign in asks for a code by email, then sends the code with a new password. Codes are six digits, live for 15 minutes, and die after five wrong tries or once used. Only the SHA-256 hash of a code is stored.
+
+| Method | Path | Body | Success |
+| --- | --- | --- | --- |
+| POST | `/api/auth/forgot-password` | `{ "email": "praveen@example.com" }` | 200 `{ message }` |
+| POST | `/api/auth/reset-password` | `{ "email": "praveen@example.com", "code": "123456", "password": "new-password" }` | 200 `{ message }` |
+
+### Request a code
+
+`POST /api/auth/forgot-password` always answers `200` `If that email is registered, a reset code is on its way`, whether or not the address has an account, so the endpoint cannot be used to discover who is registered. When the address is registered, any earlier code is retired, a fresh one is stored as a hash with a 15-minute expiry, and an email is sent:
+
+```
+Hi Praveen,
+
+Your HomeHub password reset code is:
+
+482913
+
+Enter it in the app within 15 minutes. If you did not ask to reset your password, you can ignore this email and your password will stay as it is.
+```
+
+A second request within 60 seconds of the last gets the same `200` but sends nothing. If the mail cannot be sent, the response is `503` `Could not send the email. Please try again later.` and the unsent code is retired so the next request is not blocked by the cooldown.
+
+### Reset with the code
+
+`POST /api/auth/reset-password` checks, in order, that the email is well formed, the code is exactly six digits, and the password is 8 to 72 characters. Each failure returns `400` with the rule in the message. Then the live code for the account is compared in constant time. On success the password is stored as a bcrypt hash, the code is marked used, and the response is `200` `Password updated. You can sign in with your new password.`
+
+Every other case answers `400` `Invalid or expired code`: an unknown email, no code issued, an expired code, a used code, a code past its five attempts, or a wrong code. A wrong code counts against the code's attempts even though the request fails; a code with five wrong attempts is dead and a new one must be requested.
+
+Existing sign-in tokens stay valid until they expire (seven days). Signing other devices out on reset is a follow-up.
+
+### Configuration
+
+Set `EMAIL_USER` to a Gmail address and `EMAIL_PASS` to a 16-character App Password from that Google account (Security, 2-Step Verification, App passwords). Mail goes out through Gmail's SMTP as `HomeHub <address>`. With neither set, the backend prints the email to its console instead of sending, so the flow works locally without an account. This module requires the `add_password_reset` migration:
+
+```sh
+npx prisma migrate deploy
+npx prisma generate
+```
+
+Tests in `tests/password-reset.test.mjs` cover code generation, validation, the identical response for unknown emails, the cooldown, mail failure, the successful reset with a bcrypt hash, wrong-code counting, and every refusal case, with Prisma and the mailer mocked.
