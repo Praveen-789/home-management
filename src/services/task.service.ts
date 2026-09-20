@@ -1,3 +1,4 @@
+import { actorName, createNotification } from "./notification.service.js";
 import type { HouseholdRole, Prisma, TaskPriority, TaskStatus } from "../../generated/prisma/client.js";
 import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
@@ -120,6 +121,16 @@ export async function createTask(householdId: string, requesterId: string, input
       data: { ...input, householdId, createdById: requesterId },
       select: taskSelect,
     });
+    if (input.assignedToId && input.assignedToId !== requesterId) {
+      await createNotification({
+        userId: input.assignedToId,
+        type: "TASK_ASSIGNED",
+        title: "New task assigned to you",
+        message: `${await actorName(tx, requesterId)} assigned you a task: ${task.title}`,
+        householdId,
+        entityId: task.id,
+      }, tx);
+    }
     return withImages(task);
   });
 }
@@ -144,6 +155,34 @@ export async function updateTask(
       data: patch,
       select: taskSelect,
     });
+    // Notify only on a change, so retrying the same PATCH does not create noise.
+    if (patch.assignedToId && patch.assignedToId !== task.assignedToId && patch.assignedToId !== requesterId) {
+      await createNotification({
+        userId: patch.assignedToId,
+        type: "TASK_ASSIGNED",
+        title: "New task assigned to you",
+        message: `${await actorName(tx, requesterId)} assigned you a task: ${updated.title}`,
+        householdId,
+        entityId: task.id,
+      }, tx);
+    }
+    if (patch.status === "DONE" && task.status !== "DONE" && task.createdById !== requesterId) {
+      // A former member must not receive new information about the household.
+      const creatorMembership = await tx.householdMember.findUnique({
+        where: { userId_householdId: { userId: task.createdById, householdId } },
+        select: { id: true },
+      });
+      if (creatorMembership) {
+        await createNotification({
+          userId: task.createdById,
+          type: "TASK_COMPLETED",
+          title: "Task completed",
+          message: `${await actorName(tx, requesterId)} completed your task: ${updated.title}`,
+          householdId,
+          entityId: task.id,
+        }, tx);
+      }
+    }
     return withImages(updated);
   });
 }
@@ -241,7 +280,7 @@ const requireTaskImageAccess = (role: HouseholdRole, requesterId: string, task: 
 async function requireTask(tx: Prisma.TransactionClient, householdId: string, taskId: string) {
   const task = await tx.task.findFirst({
     where: { id: taskId, householdId },
-    select: { id: true, createdById: true, assignedToId: true },
+    select: { id: true, createdById: true, assignedToId: true, status: true },
   });
 
   if (!task) {

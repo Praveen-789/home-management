@@ -31,6 +31,13 @@ after(async () => {
 function setup({ actor = 'OWNER', createdById = 'creator', assignedToId = 'assignee', found = true, assigneeIsMember = true, total = 1 } = {}) {
   const row = { ...task, createdById, assignedToId };
   db = {
+    notification: { create: mock.fn(async ({ data }) => ({ id: "notice", ...data })) },
+    // Only read for the actor's name, and only when a notification is sent.
+    user: { findUnique: mock.fn(async ({ where, select }) => {
+      assert.deepEqual(where, { id: 'actor' });
+      assert.deepEqual(select, { name: true });
+      return { name: 'Actor' };
+    }) },
     row,
     householdMember: {
       findUnique: mock.fn(async ({ where }) => {
@@ -288,4 +295,96 @@ test('unexpected errors do not expose database details', async () => {
   mock.method(console, 'error', () => {});
   db.task.findMany = mock.fn(async () => { throw new Error('private details'); });
   assert.deepEqual(await request('GET', null), { status: 500, body: { message: 'Task operation failed' } });
+});
+
+
+test('task creation notifies the assignee but not an unassigned or self-assigned task', async () => {
+  for (const assignedToId of [undefined, 'actor', 'assignee']) {
+    setup();
+    assert.equal((await request('POST', null, { title: 'Buy groceries', assignedToId })).status, 201);
+    const notices = db.notification.create.mock.calls.map(call => call.arguments[0].data);
+    assert.equal(notices.length, assignedToId === 'assignee' ? 1 : 0);
+    if (notices.length) {
+      assert.equal(notices[0].userId, 'assignee');
+      assert.equal(notices[0].type, 'TASK_ASSIGNED');
+      assert.equal(notices[0].message, 'Actor assigned you a task: Buy groceries');
+    }
+    // The name is looked up only when someone is actually notified.
+    assert.equal(db.user.findUnique.mock.callCount(), notices.length);
+  }
+});
+
+test('reassignment notifies only a different assignee other than the actor', async () => {
+  for (const assignedToId of ['assignee', 'new-member', 'actor', null]) {
+    setup();
+    assert.equal((await request('PATCH', 'task-1', { assignedToId })).status, 200);
+    const notices = db.notification.create.mock.calls.map(call => call.arguments[0].data);
+    assert.equal(notices.length, assignedToId === 'new-member' ? 1 : 0);
+    if (notices.length) {
+      assert.equal(notices[0].userId, 'new-member');
+      assert.equal(notices[0].householdId, 'home');
+      assert.equal(notices[0].entityId, 'task-1');
+    }
+  }
+});
+
+test('completion notifies creator only on a transition to DONE', async () => {
+  for (const previousStatus of ['TODO', 'IN_PROGRESS', 'DONE']) {
+    setup();
+    db.row.status = previousStatus;
+    assert.equal((await request('PATCH', 'task-1', { status: 'DONE' })).status, 200);
+    const notices = db.notification.create.mock.calls.map(call => call.arguments[0].data);
+    assert.equal(notices.length, previousStatus === 'DONE' ? 0 : 1);
+    if (notices.length) {
+      assert.equal(notices[0].userId, 'creator');
+      assert.equal(notices[0].type, 'TASK_COMPLETED');
+      assert.equal(notices[0].message, 'Actor completed your task: Buy groceries');
+      assert.equal(notices[0].householdId, 'home');
+      assert.equal(notices[0].entityId, 'task-1');
+    }
+  }
+});
+
+test('completion skips the actor and creators who have left the household', async () => {
+  setup({ createdById: 'actor' });
+  assert.equal((await request('PATCH', 'task-1', { status: 'DONE' })).status, 200);
+  assert.equal(db.notification.create.mock.callCount(), 0);
+  setup({ assigneeIsMember: false });
+  assert.equal((await request('PATCH', 'task-1', { status: 'DONE' })).status, 200);
+  assert.equal(db.notification.create.mock.callCount(), 0);
+});
+
+test('unauthorized task changes create no notifications', async () => {
+  setup({ actor: 'MEMBER' });
+  assert.equal((await request('PATCH', 'task-1', { assignedToId: 'new-member' })).status, 403);
+  assert.equal(db.notification.create.mock.callCount(), 0);
+});
+
+test('notification failure aborts the task transaction; serialization retry commits one notice', async () => {
+  for (const retry of [false, true]) {
+    setup();
+    mock.method(console, 'error', () => {});
+    let attempts = 0;
+    let committed = [];
+    prisma.$transaction = async operation => {
+      attempts++;
+      const pending = [];
+      db.notification.create = async ({ data }) => {
+        if (attempts === 1) {
+          if (retry) throw new Prisma.PrismaClientKnownRequestError('Conflict', { code: 'P2034', clientVersion: '7.10.0' });
+          throw new Error('Notification write failed');
+        }
+        pending.push(data);
+        return data;
+      };
+      const result = await operation(db);
+      committed.push(...pending);
+      return result;
+    };
+    const response = await request('POST', null, { title: 'Buy groceries', assignedToId: 'assignee' });
+    assert.equal(response.status, retry ? 201 : 500);
+    assert.equal(attempts, retry ? 2 : 1);
+    assert.equal(committed.length, retry ? 1 : 0);
+    mock.restoreAll();
+  }
 });

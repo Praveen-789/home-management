@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "node --import tsx --test tests/*.test.mjs",
-    "dev": "nodemon --watch src --ext ts,json --exec tsx src/server.ts",
+    "dev": "nodemon --watch src --watch generated --ext ts,json --exec tsx src/server.ts",
     "start": "npx tsx src/server.ts"
   },
   "keywords": [],
@@ -32,6 +32,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "google-auth-library": "^11.1.0",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^10.0.3",
     "pg": "^8.23.0",

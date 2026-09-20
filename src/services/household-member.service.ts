@@ -1,3 +1,4 @@
+import { actorName, createNotification } from "./notification.service.js";
 import { Prisma } from "../../generated/prisma/client.js";
 import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
@@ -9,7 +10,7 @@ import {
 
 export type AssignableRole = "ADMIN" | "MEMBER";
 
-// The user to add, identified by ID or by the email they registered with.
+// The user to invite, identified by ID or by the email they registered with.
 export type MemberTarget = { userId: string } | { email: string };
 
 // Fields returned to the controller. User passwords are never selected.
@@ -36,42 +37,6 @@ export async function listHouseholdMembers(
       where: { householdId },
       select: memberSelect,
       orderBy: [{ joinedAt: "asc" }, { id: "asc" }],
-    });
-  });
-}
-
-export async function addHouseholdMember(
-  householdId: string,
-  requesterId: string,
-  target: MemberTarget,
-  role: AssignableRole,
-) {
-  return withMembershipTransaction(async (tx) => {
-    const requester = await requireHouseholdMember(tx, householdId, requesterId);
-    requireManageableRole(requester.role, role);
-
-    // Email is unique, so either lookup resolves to at most one user.
-    const user = await tx.user.findUnique({
-      where: "userId" in target ? { id: target.userId } : { email: target.email },
-      select: { id: true },
-    });
-
-    if (!user) {
-      throw new AppError("User not found", 404);
-    }
-
-    const userId = user.id;
-    const existingMember = await tx.householdMember.findUnique({
-      where: { userId_householdId: { userId, householdId } },
-    });
-
-    if (existingMember) {
-      throw new AppError("User is already a household member", 409);
-    }
-
-    return tx.householdMember.create({
-      data: { householdId, userId, role },
-      select: memberSelect,
     });
   });
 }

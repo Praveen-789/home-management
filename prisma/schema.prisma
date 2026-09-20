@@ -45,7 +45,8 @@ model User {
   id        String   @id @default(uuid())
   name      String
   email     String   @unique
-  password  String
+  password  String?
+  googleId  String?  @unique
   createdAt DateTime @default(now())
 
   memberships       HouseholdMember[]
@@ -57,6 +58,8 @@ model User {
   uploadedImages    Image[]
   passwordResets    PasswordReset[]
   notifications     Notification[]
+  receivedInvitations HouseholdInvitation[] @relation("InvitationRecipient")
+  sentInvitations     HouseholdInvitation[] @relation("InvitationSender")
 }
 
 model Household {
@@ -70,6 +73,8 @@ model Household {
   tasks    Task[]
   expenses Expense[]
   images   Image[]
+  notifications Notification[]
+  invitations   HouseholdInvitation[]
 
   @@unique([createdById, name])
 }
@@ -85,6 +90,25 @@ model HouseholdMember {
   household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
 
   @@unique([userId, householdId])
+}
+
+// A request to join a household that the invited user has not answered yet. The row exists only
+// while it is pending: accepting turns it into a membership, and declining or cancelling deletes
+// it. That is why the unique pair below means one open invitation per user and household.
+model HouseholdInvitation {
+  id            String        @id @default(uuid())
+  householdId   String
+  invitedUserId String
+  invitedById   String
+  role          HouseholdRole @default(MEMBER)
+  createdAt     DateTime      @default(now())
+
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  invitedUser User      @relation("InvitationRecipient", fields: [invitedUserId], references: [id], onDelete: Cascade)
+  invitedBy   User      @relation("InvitationSender", fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@unique([householdId, invitedUserId])
+  @@index([invitedUserId, createdAt])
 }
 
 model Task {
@@ -187,9 +211,15 @@ model Notification {
   message String
   isRead  Boolean @default(false)
 
+  // Navigation target. entityId is a task or expense ID depending on type; it
+  // has no foreign key, so it may point at a record that was deleted later.
+  householdId String?
+  entityId    String?
+
   createdAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  household Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
 
   @@index([userId, isRead])
   @@index([userId, createdAt])

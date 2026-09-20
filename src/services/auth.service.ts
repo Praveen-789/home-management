@@ -40,7 +40,7 @@ export const loginUser = async (email: string, password: string) => {
 
   // The same message is used for a missing user and a wrong password so the
   // endpoint does not reveal which email addresses are registered.
-  if (!user) {
+  if (!user || !user.password) {
     throw new AppError("Invalid email or password", 401);
   }
 

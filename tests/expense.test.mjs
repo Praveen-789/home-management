@@ -34,9 +34,11 @@ after(async () => {
 function setup({ actor = 'OWNER', createdById = 'recorder', paidById = 'payer', found = true, payerIsMember = true, taskInHousehold = true, total = 1 } = {}) {
   const row = { ...stored, createdById, paidById };
   db = {
+    notification: { create: mock.fn(async ({ data }) => ({ id: "notice", ...data })) },
     row,
     view: { ...row, amount: '1250.50' },
     householdMember: {
+      findMany: mock.fn(async () => [{ userId: "payer" }]),
       findUnique: mock.fn(async ({ where }) => {
         const key = where.userId_householdId;
         assert.equal(key.householdId, 'home');
@@ -377,4 +379,77 @@ test('unexpected errors do not expose database details', async () => {
   mock.method(console, 'error', () => {});
   db.expense.findMany = mock.fn(async () => { throw new Error('private details'); });
   assert.deepEqual(await request('GET', ''), { status: 500, body: { message: 'Expense operation failed' } });
+});
+
+
+test('expense creation notifies current other members with payer and exact amount', async () => {
+  setup();
+  db.householdMember.findMany = mock.fn(async ({ where, select }) => {
+    assert.deepEqual(where, { householdId: 'home', userId: { not: 'actor' } });
+    assert.deepEqual(select, { userId: true });
+    return [{ userId: 'payer' }, { userId: 'member-2' }];
+  });
+  assert.equal((await request('POST', '', validBody)).status, 201);
+  const notices = db.notification.create.mock.calls.map(call => call.arguments[0].data);
+  assert.deepEqual(notices.map(n => n.userId), ['payer', 'member-2']);
+  assert.ok(notices.every(n => n.type === 'EXPENSE_ADDED'));
+  assert.equal(notices[0].message, 'GROCERIES: 1250.50. Paid by Payer.');
+});
+
+test('unchanged expense fields do not notify, including equivalent decimal amounts', async () => {
+  setup();
+  db.row.taskId = 'task-1';
+  for (const patch of [
+    { amount: '1250.50' }, { description: 'Weekly groceries' },
+    { category: 'GROCERIES' }, { paidById: 'payer' }, { taskId: 'task-1' },
+  ]) {
+    assert.equal((await request('PATCH', '/expense-1', patch)).status, 200);
+  }
+  assert.equal(db.notification.create.mock.callCount(), 0);
+  assert.equal(db.householdMember.findMany.mock.callCount(), 0);
+});
+
+test('each meaningful expense field change creates an update notice', async () => {
+  for (const patch of [
+    { amount: '850.00' }, { description: null }, { category: 'OTHER' },
+    { paidById: 'actor' }, { taskId: null },
+  ]) {
+    setup();
+    db.row.taskId = 'task-1';
+    assert.equal((await request('PATCH', '/expense-1', patch)).status, 200);
+    assert.equal(db.notification.create.mock.callCount(), 1);
+    const notice = db.notification.create.mock.calls[0].arguments[0].data;
+    assert.equal(notice.type, 'EXPENSE_UPDATED');
+    assert.equal(notice.householdId, 'home');
+    assert.equal(notice.entityId, 'expense-1');
+  }
+});
+
+test('sole-member household and unauthorized expense changes create no notices', async () => {
+  setup();
+  db.householdMember.findMany = async () => [];
+  assert.equal((await request('POST', '', validBody)).status, 201);
+  assert.equal(db.notification.create.mock.callCount(), 0);
+  setup({ actor: 'MEMBER' });
+  assert.equal((await request('PATCH', '/expense-1', { amount: '850' })).status, 403);
+  assert.equal(db.notification.create.mock.callCount(), 0);
+});
+
+test('a failed recipient insert rejects the expense transaction instead of saving a partial broadcast', async () => {
+  setup();
+  mock.method(console, 'error', () => {});
+  db.householdMember.findMany = async () => [{ userId: 'payer' }, { userId: 'member-2' }];
+  let committed = false;
+  db.notification.create = mock.fn(async ({ data }) => {
+    if (data.userId === 'member-2') throw new Error('Insert failed');
+    return data;
+  });
+  prisma.$transaction = async operation => {
+    const result = await operation(db);
+    committed = true;
+    return result;
+  };
+  assert.equal((await request('POST', '', validBody)).status, 500);
+  assert.equal(db.notification.create.mock.callCount(), 2);
+  assert.equal(committed, false);
 });

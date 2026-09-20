@@ -1,3 +1,4 @@
+import { createNotification } from "./notification.service.js";
 import type { ExpenseCategory, HouseholdRole, Prisma } from "../../generated/prisma/client.js";
 import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
@@ -190,6 +191,7 @@ export async function createExpense(householdId: string, requesterId: string, in
       data: { ...input, paidById, householdId, createdById: requesterId },
       select: expenseSelect,
     });
+    await notifyExpenseMembers(tx, householdId, requesterId, "EXPENSE_ADDED", expense);
     return serialize(expense);
   });
 }
@@ -217,6 +219,16 @@ export async function updateExpense(
       data: patch,
       select: expenseSelect,
     });
+    // Compare actual values, including numeric equality (850 and 850.00 match).
+    const changed =
+      (patch.amount !== undefined && !expense.amount.equals(patch.amount)) ||
+      (patch.description !== undefined && patch.description !== expense.description) ||
+      (patch.category !== undefined && patch.category !== expense.category) ||
+      (patch.paidById !== undefined && patch.paidById !== expense.paidById) ||
+      (patch.taskId !== undefined && patch.taskId !== expense.taskId);
+    if (changed) {
+      await notifyExpenseMembers(tx, householdId, requesterId, "EXPENSE_UPDATED", updated);
+    }
     return serialize(updated);
   });
 }
@@ -286,7 +298,7 @@ const requireExpenseManagement = (role: HouseholdRole, requesterId: string, expe
 async function requireExpense(tx: Prisma.TransactionClient, householdId: string, expenseId: string) {
   const expense = await tx.expense.findFirst({
     where: { id: expenseId, householdId },
-    select: { id: true, createdById: true, paidById: true },
+    select: { id: true, createdById: true, paidById: true, amount: true, description: true, category: true, taskId: true },
   });
 
   if (!expense) {
@@ -317,5 +329,33 @@ async function requireHouseholdTask(tx: Prisma.TransactionClient, householdId: s
 
   if (!task) {
     throw new AppError("Task must belong to this household", 400);
+  }
+}
+
+// One inbox entry per current member, except the person performing the action.
+// Use the caller's transaction: either the expense and notifications all save,
+// or none of them save. Push delivery can be added separately later.
+async function notifyExpenseMembers(
+  tx: Prisma.TransactionClient,
+  householdId: string,
+  requesterId: string,
+  type: "EXPENSE_ADDED" | "EXPENSE_UPDATED",
+  expense: { id: string; amount: Prisma.Decimal; category: ExpenseCategory; paidBy: { name: string } },
+) {
+  const members = await tx.householdMember.findMany({
+    where: { householdId, userId: { not: requesterId } },
+    select: { userId: true },
+  });
+  const title = type === "EXPENSE_ADDED" ? "New household expense" : "Household expense updated";
+  for (const member of members) {
+    await createNotification({
+      userId: member.userId,
+      type,
+      title,
+      // No currency is assumed: the existing expense model has no currency field.
+      message: `${expense.category}: ${expense.amount.toFixed(2)}. Paid by ${expense.paidBy.name}.`,
+      householdId,
+      entityId: expense.id,
+    }, tx);
   }
 }

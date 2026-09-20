@@ -278,11 +278,12 @@ All endpoints require a Bearer token and the requester must belong to the househ
 | Method | Path | Body | Success |
 | --- | --- | --- | --- |
 | GET | `/api/households/:householdId/members` | None | 200 `{ message, members }` |
-| POST | `/api/households/:householdId/members` | `{ "email": "member@example.com", "role": "MEMBER" }` or `{ "userId": "existing-user-id", "role": "MEMBER" }` | 201 `{ message, member }` |
 | PATCH | `/api/households/:householdId/members/:userId` | `{ "role": "ADMIN" }` | 200 `{ message, member }` |
 | DELETE | `/api/households/:householdId/members/:userId` | None | 200 `{ message }` |
 
-POST identifies the user to add by exactly one of `email` or `userId`. The email is trimmed and then matched exactly against the address the user registered with (case-sensitive, like login). Sending neither returns `400` `User ID or email address is required`; sending both returns `400` `Provide either a user ID or an email address, not both`; a blank value returns `400` `Email address is required` or `User ID is required`. An unregistered email or unknown ID returns `404` `User not found`. Permission checks run before the lookup, so a requester who may not assign the role learns nothing about whether the email is registered. POST defaults an omitted role to `MEMBER`. PATCH requires a role. Only `ADMIN` and `MEMBER` are assignable. IDs must be nonblank strings. Extra body properties are ignored. The `:userId` parameter is a User ID, not a membership ID.
+People are never added directly. `POST /api/households/:householdId/members` no longer exists (404); an owner or admin sends an invitation and the membership is created when the invited user accepts. See **Household invitations** below.
+
+PATCH requires a role. Only `ADMIN` and `MEMBER` are assignable. IDs must be nonblank strings. Extra body properties are ignored. The `:userId` parameter is a User ID, not a membership ID.
 
 GET returns:
 
@@ -299,25 +300,71 @@ GET returns:
 }
 ```
 
-Members are ordered by joining time, then membership ID. POST and PATCH return the same member fields. Passwords are never selected.
+Members are ordered by joining time, then membership ID. PATCH returns the same member fields. Passwords are never selected.
 
 | Permission | OWNER | ADMIN | MEMBER |
 | --- | --- | --- | --- |
 | List members | Yes | Yes | Yes |
-| Add MEMBER | Yes | Yes | No |
-| Add ADMIN | Yes | No | No |
+| Invite as MEMBER, or cancel such an invitation | Yes | Yes | No |
+| Invite as ADMIN, or cancel such an invitation | Yes | No | No |
 | Change MEMBER to ADMIN or ADMIN to MEMBER | Yes | No | No |
 | Remove MEMBER | Yes | Yes | No |
 | Remove ADMIN | Yes | No | No |
 | Assign, demote, or remove OWNER | No | No | No |
 
-An authorized update to the current role succeeds (including ADMIN updating a MEMBER to MEMBER). Self-removal is unsupported. DELETE removes membership only, not the user. Ownership transfer and invitations are outside these endpoints.
+An authorized update to the current role succeeds (including ADMIN updating a MEMBER to MEMBER). Self-removal is unsupported. DELETE removes membership only, not the user. Ownership transfer is outside these endpoints.
 
 Errors use `{ "message": "..." }`: `400` for invalid input, `401` for invalid/missing authentication, `403` for prohibited management actions, `404` for missing targets or inaccessible households, `409` for duplicate membership or exhausted concurrency retries, and a generic `500` for unexpected failures. Missing and inaccessible households share `Household not found or access denied`.
 
-Membership checks and operations run in serializable transactions. Conflicts retry the entire operation up to three attempts, re-reading permissions. The existing composite unique constraint also protects against simultaneous duplicate additions. No new migration is required for this module.
+Membership checks and operations run in serializable transactions. Conflicts retry the entire operation up to three attempts, re-reading permissions. The composite unique constraint on memberships also protects against two simultaneous acceptances.
 
 Member HTTP tests in `tests/household-member.test.mjs` cover role combinations, authentication, access restrictions, safe response fields, validation, missing targets, duplicate errors, and simulated transaction conflicts. They mock Prisma; they do not verify PostgreSQL concurrency behavior against a live database.
+
+## Household invitations
+
+Nobody joins a household without agreeing to it. An owner or admin invites a registered user; that user sees the invitation in their notifications and on their household list, and becomes a member only by accepting. All endpoints require a Bearer token.
+
+| Method | Path | Who | Body | Success |
+| --- | --- | --- | --- | --- |
+| POST | `/api/households/:householdId/invitations` | OWNER, ADMIN | `{ "email": "member@example.com", "role": "MEMBER" }` or `{ "userId": "existing-user-id", "role": "MEMBER" }` | 201 `{ message, invitation }` |
+| GET | `/api/households/:householdId/invitations` | Any member | None | 200 `{ message, invitations }` |
+| DELETE | `/api/households/:householdId/invitations/:invitationId` | OWNER, ADMIN | None | 200 `{ message }` |
+| GET | `/api/invitations` | The invited user | None | 200 `{ message, invitations }` |
+| POST | `/api/invitations/:id/accept` | The invited user | None | 200 `{ message, member, household }` |
+| POST | `/api/invitations/:id/decline` | The invited user | None | 200 `{ message }` |
+
+```json
+{
+  "id": "invitation-id",
+  "role": "MEMBER",
+  "createdAt": "2026-09-20T10:00:00.000Z",
+  "household": { "id": "household-id", "name": "Family Home" },
+  "invitedUser": { "id": "user-id", "name": "Asha", "email": "asha@example.com" },
+  "invitedBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }
+}
+```
+
+Both lists are newest first and return only pending invitations, because an invitation exists only while it is pending: accepting replaces it with a membership, and declining or cancelling deletes it. `/api/invitations` takes the user from the token; a user ID in the query or body is ignored.
+
+**Inviting.** POST identifies the user by exactly one of `email` or `userId`. The email is trimmed and then matched exactly against the address the user registered with (case-sensitive, like login). Sending neither returns `400` `User ID or email address is required`; sending both returns `400` `Provide either a user ID or an email address, not both`; a blank value returns `400` `Email address is required` or `User ID is required`. An omitted role defaults to `MEMBER`; only `ADMIN` and `MEMBER` are accepted. The role matrix is the one in **Household members**, and it is checked before the lookup, so a requester who may not invite learns nothing about whether an email is registered. An unregistered email or unknown ID returns `404` `User not found`. `409` `User is already a household member` and `409` `User already has a pending invitation to this household` cover the two duplicates; the database also enforces one pending invitation per user and household.
+
+**Cancelling** follows the same matrix against the invitation's role, so an admin cannot cancel an owner's admin invitation. The invited user is not notified; their invitation notification simply stops working (404 on accept).
+
+**Accepting** creates the membership with the invited role and deletes the invitation in one transaction. The invitation is honoured only while its sender could still send it: if the sender has left the household, or was an admin who has since been demoted, accept returns `409` `This invitation is no longer valid. You can decline it.` and changes nothing. A missing invitation and another user's invitation both return `404` `Invitation not found`.
+
+**Notifications**, each saved in the same transaction as the change it reports:
+
+| Event | Recipient | Type | Message | `householdId` / `entityId` |
+| --- | --- | --- | --- | --- |
+| Invited | Invited user | `HOUSEHOLD_INVITATION` | `Praveen wants to add you to Family Home as member.` | household / invitation ID |
+| Accepted | Sender | `MEMBER_JOINED` | `Asha accepted your invitation to Family Home.` | household / null |
+| Declined | Sender, if still a member | `INVITATION_DECLINED` | `Asha declined your invitation to Family Home.` | household / null |
+
+The invited user is not a member yet, so a client must not open the household from a `HOUSEHOLD_INVITATION` notification; it offers accept and decline with the `entityId` instead.
+
+Errors use `{ "message": "..." }` with the statuses above, `401` for authentication, `403` for the role matrix, `404` `Household not found or access denied` for non-members on the household routes, and a generic `500` `Household invitation operation failed`. Operations run in serializable transactions with the same three-attempt retry as members. Requires the `add_household_invitation` migration. Tests: `tests/household-invitation.test.mjs` (Prisma mocked).
+
+To try it: as A, POST an invitation for B's email. As B, GET `/api/invitations` and `/api/notifications`, confirm GET `/api/households` does not list the household yet, then POST accept and confirm it does. Check A's inbox for the acceptance. Repeat with decline, and with A cancelling before B answers.
 
 ## List my households
 
@@ -694,3 +741,177 @@ npx prisma generate
 ```
 
 Tests in `tests/password-reset.test.mjs` cover code generation, validation, the identical response for unknown emails, the cooldown, mail failure, the successful reset with a bcrypt hash, wrong-code counting, and every refusal case, with Prisma and the mailer mocked.
+
+
+## Notifications
+
+All notification endpoints require `Authorization: Bearer <token>`. The token identifies the recipient; passing a user ID in the body or query cannot change whose inbox is accessed. These endpoints work across all of that user's households, including historical notifications after membership ends.
+
+| Method | Path | Success (200) |
+| --- | --- | --- |
+| GET | `/api/notifications` | `{ message, notifications, pagination }` |
+| GET | `/api/notifications/unread-count` | `{ "unreadCount": 3 }` |
+| PATCH | `/api/notifications/:id/read` | `{ "message": "Notification marked as read" }` |
+| PATCH | `/api/notifications/read-all` | `{ "message": "Notifications marked as read", "updatedCount": 3 }` |
+| DELETE | `/api/notifications/:id` | `{ "message": "Notification deleted successfully" }` |
+
+PATCH and DELETE require no body. Marking an already-read notification succeeds. Mark-all updates only currently unread notifications and returns the number changed (zero is valid). Deleting an already-deleted notification returns 404.
+
+### Pagination and filtering
+
+`GET /api/notifications?page=1&limit=20&unread=true`
+
+- `page`: integer from 1 to 100000, default 1.
+- `limit`: integer from 1 to 100, default 20.
+- `unread`: optional exact `true` (unread only) or `false` (read only). Omit it for both.
+- Invalid or repeated values for these parameters return 400.
+- Notifications are ordered by `createdAt` descending, then `id` descending. An empty inbox returns an empty array and `totalPages: 0`.
+
+```json
+{
+  "message": "Notifications fetched successfully",
+  "notifications": [{
+    "id": "notification-id",
+    "userId": "recipient-id",
+    "type": "TASK_ASSIGNED",
+    "title": "New task assigned to you",
+    "message": "Praveen assigned you a task: Buy groceries",
+    "isRead": false,
+    "householdId": "household-id",
+    "entityId": "task-id",
+    "createdAt": "2026-09-19T10:00:00.000Z"
+  }],
+  "pagination": { "page": 1, "limit": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+`householdId` and `entityId` are the navigation target and may each be `null`. `entityId` is a task ID for `TASK_*` types and an expense ID for `EXPENSE_*` types, and the invitation ID for `HOUSEHOLD_INVITATION`; `MEMBER_JOINED` and `INVITATION_DECLINED` have a `householdId` only. `entityId` has no foreign key, so the task or expense may have been deleted since: treat a 404 when opening it as "no longer available". `householdId` becomes `null` if the household is deleted. Check membership before navigating, because the recipient may have left the household.
+
+Missing and another user's notification IDs both return 404 `Notification not found`. Invalid/missing tokens return 401. Unexpected failures return 500 `Notification operation failed` without exposing database details.
+
+### Postman / Thunder Client walkthrough
+
+1. Log in and put the returned token in Authorization > Bearer Token.
+2. Call GET `/api/notifications` and GET `/api/notifications/unread-count`. Without seeded notifications, expect an empty list and zero.
+3. For a populated test, create a notification for an existing test user's ID through the internal `createNotification()` service or Prisma Studio. There is no public POST endpoint. Task and expense operations now create notifications automatically; see the event rules below.
+4. Copy the notification ID from the list. PATCH `/api/notifications/<id>/read`; verify unread count decreases and repeating the PATCH succeeds.
+5. Try the list with `unread=true`, `unread=false`, and `page=1&limit=1`.
+6. PATCH `/api/notifications/read-all`; verify unread count is zero.
+7. DELETE `/api/notifications/<id>`; verify it disappears. Repeating the deletion returns 404.
+8. Log in as a second user: the first user's notifications must be absent, and read/delete requests for their IDs must return 404.
+
+The `add_notifications` and `add_notification_target` migrations must be applied to the target database. Automated HTTP tests mock Prisma; they do not establish live PostgreSQL migration or connectivity status.
+
+
+### Automatic task and expense notifications
+
+Notifications are created by backend services, with no frontend POST needed.
+
+| Type | Trigger | Recipient |
+| --- | --- | --- |
+| `TASK_ASSIGNED` | Create an assigned task, or change its assignee | New assignee, unless they performed the action |
+| `TASK_COMPLETED` | Change an existing task from another status to `DONE` | Task creator, if still a household member and not the actor |
+| `EXPENSE_ADDED` | Create an expense | All current household members except the actor |
+| `EXPENSE_UPDATED` | Change amount, description, category, payer, or linked task | All current household members except the actor |
+
+An unchanged assignment, clearing an assignment, self-assignment, and repeated `DONE` updates produce no notification. Reopening a completed task and completing it again is a new completion event. Creating a task already marked DONE does not generate a completion notice. Equivalent amounts such as 850 and 850.00 do not count as a change. Image-only edits and deletion do not generate notices.
+
+Expense messages identify the payer, who may differ from the person recording the expense. Amounts have two decimal places without an assumed currency. Messages use the current task title or updated expense details.
+
+Task and invitation messages name the person who acted, read from their account when the notification is written: `Praveen assigned you a task: Buy groceries`, `Asha completed your task: Buy groceries`. The name is stored as text, so a later rename does not change old notifications.
+
+Notification types are validated in TypeScript and at runtime; the database column remains text. `MEMBER_REMOVED` is a reserved type; its event producer is not connected yet.
+
+All notification inserts use the same transaction as the task or expense write. A failed insert aborts the whole operation. Serialization retries retry both together. This does not provide request-level idempotency for repeated POST requests: each successful POST creates a separate resource and notifications.
+
+To test: as user A create a task assigned to B; sign in as B and check the inbox. Have B mark it DONE and check A's inbox. Repeat the same status PATCH and verify no extra notice. Create/update an expense as A and check the inbox of another current member; repeat an identical update and verify no extra notice. The automatic tests mock Prisma, including transaction failure/retry paths; actual PostgreSQL rollback behavior is not exercised by them.
+
+These are stored in-app notifications. Expo push delivery is not yet connected. Each notification carries `householdId` and `entityId` for navigation; rows created before the `add_notification_target` migration have both as `null`.
+
+
+### Invitation notifications
+
+Inviting, accepting and declining each notify one person; see **Household invitations** for the table. `entityId` on a `HOUSEHOLD_INVITATION` notification is the invitation ID.
+
+
+## Google sign-in and account linking
+
+Email/password registration, login, and password reset remain available for accounts with a local password. Google-only users have a null password and use Google to sign in. Password-reset requests for them return the usual generic message without emailing a code; reset attempts fail with `Invalid or expired code`.
+
+### Backend setup
+
+1. Create the Google OAuth client configuration for your Expo app. Request the `openid`, `email`, and `profile` scopes. Configure the Expo native sign-in library's `webClientId` to the Web OAuth client ID used for backend authentication.
+2. Add the expected ID-token audience to the backend `.env`:
+
+```dotenv
+GOOGLE_CLIENT_IDS=your-web-client-id.apps.googleusercontent.com
+```
+
+Use a comma-separated allowlist only if multiple trusted clients intentionally issue tokens for this backend. Never accept arbitrary audiences from clients. No Google client secret is needed for this ID-token verification flow. Existing `JWT_SECRET` and `DATABASE_URL` configuration still apply.
+
+3. Apply the migration and regenerate the client:
+
+```sh
+npx prisma migrate deploy
+npx prisma generate
+```
+
+The `add_google_auth` migration adds a unique nullable `googleId` and makes `password` nullable. It does not remove existing users or change existing password hashes. `migrate deploy` applies all pending migrations, so review pending migration status for the target environment first. Restart the backend after configuring it.
+
+Without `GOOGLE_CLIENT_IDS`, Google endpoints return 503 `Google sign-in is not configured`; ordinary authentication continues to work.
+
+### Sign up or sign in with Google
+
+`POST /api/auth/google` (no HomeHub token required):
+
+```json
+{ "idToken": "<Google ID token obtained by the Expo app>" }
+```
+
+Use an ID token, not a Google access token. Send it over HTTPS in deployed environments. The server uses Google's official library to verify the signature, issuer, audience, and expiry, then requires a verified email. Name, email, and Google account ID are taken from the verified token, never from separate request fields.
+
+- Existing `googleId`: 200, signs into that same HomeHub user. A changed Google email does not overwrite the saved HomeHub email.
+- New Google ID and unused email: 201, creates a Google-only account.
+- Email already belongs to any existing account (case-insensitive comparison): 409 `Sign in to your existing account first, then link Google`. No automatic merging or linking occurs.
+
+```json
+{
+  "message": "Login successful",
+  "user": { "id": "user-id", "name": "Alice", "email": "alice@gmail.com" },
+  "isNewUser": false,
+  "token": "<HomeHub JWT>"
+}
+```
+
+For a new user, the message is `Account created successfully` and `isNewUser` is true. Use the returned HomeHub JWT for all protected APIs as before. Google ID tokens are not stored. No Gmail mailbox permissions are requested.
+
+### Link Google to an existing password account
+
+First log in using the existing email and password. Then call `POST /api/auth/google/link` with `Authorization: Bearer <HomeHub JWT>`:
+
+```json
+{
+  "idToken": "<Google ID token>",
+  "password": "<current HomeHub password>"
+}
+```
+
+The authenticated user comes from the HomeHub JWT, not the body. Linking requires the current password and a verified Google email matching the HomeHub email (ignoring case). A Google account cannot belong to two HomeHub users, and this endpoint cannot replace a different Google account already linked. Repeating a successful link to the same account is allowed.
+
+Success: 200 `{ "message": "Google account linked successfully", "user": { "id", "name", "email" } }`.
+
+Linking preserves the user ID, password, memberships, tasks, expenses, and notifications. Afterwards both login methods work. Unlinking, changing the account email, and adding a password to a Google-only account are not implemented.
+
+### Errors and testing
+
+- 400: missing/invalid token input or missing current password for linking.
+- 401: invalid/expired Google token, unverified/missing email, invalid current password, or invalid HomeHub authentication for linking.
+- 409: an existing account needs explicit linking, mismatched email, an already-linked Google identity, or a concurrent account conflict.
+- 503: missing Google client ID configuration.
+- 500: unexpected server error, with no internal details returned.
+
+In Postman or Thunder Client, copy a fresh Google ID token from your development app and call `/api/auth/google`. Confirm new account creation, then repeat to confirm login uses the same user ID. For an existing password account, confirm 409 first, log in normally, link with both credentials, then verify both login methods return the same user ID. Confirm the HomeHub JWT works for `/api/notifications` or `/api/households`.
+
+Automated Google-auth tests use real RSA-signed test tokens with local test certificates to exercise Google's verification library without a network request. Database calls are mocked. Live Google OAuth configuration and PostgreSQL migrations must be verified separately in the target environment.
+
+References: [Google backend token verification](https://developers.google.com/identity/sign-in/web/backend-auth), [Expo Google authentication setup](https://docs.expo.dev/guides/google-authentication/).

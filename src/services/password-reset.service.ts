@@ -45,8 +45,8 @@ export type ResetRequestOutcome = "sent" | "unknown-email" | "cooldown";
 // Issues a fresh code for the account behind `email`, replacing any earlier one, and emails it.
 export async function requestPasswordReset(email: string, now = new Date()): Promise<ResetRequestOutcome> {
   const prepared = await withSerializableTransaction(async (tx) => {
-    const user = await tx.user.findUnique({ where: { email }, select: { id: true, name: true } });
-    if (!user) return null;
+    const user = await tx.user.findUnique({ where: { email }, select: { id: true, name: true, password: true } });
+    if (!user || !user.password) return null;
 
     const latest = await tx.passwordReset.findFirst({
       where: { userId: user.id },
@@ -86,8 +86,8 @@ export async function resetPassword(email: string, code: string, password: strin
   const passwordHash = await bcrypt.hash(password, 10);
 
   const outcome = await withSerializableTransaction(async (tx) => {
-    const user = await tx.user.findUnique({ where: { email }, select: { id: true } });
-    if (!user) return "invalid";
+    const user = await tx.user.findUnique({ where: { email }, select: { id: true, password: true } });
+    if (!user || !user.password) return "invalid";
 
     const reset = await tx.passwordReset.findFirst({
       where: { userId: user.id, usedAt: null },

@@ -2,6 +2,8 @@ import cors from 'cors';
 import express from "express";
 import authRoutes from "./routes/auth.routes.js";
 import householdRoutes from "./routes/household.routes.js";
+import notificationRoutes from "./routes/notification.routes.js";
+import invitationRoutes from "./routes/invitation.routes.js";
 
 const app = express();
 
@@ -12,6 +14,8 @@ app.use(express.json());
 
 app.use("/api/auth", authRoutes);
 app.use("/api/households", householdRoutes);
+app.use("/api/notifications", notificationRoutes);
+app.use("/api/invitations", invitationRoutes);
 
 export default app;
 
