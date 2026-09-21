@@ -5,6 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "node --import tsx --test tests/*.test.mjs",
+    "test:chat:integration": "node --import tsx --test tests/chat.integration.mjs",
+    "typecheck": "tsc --noEmit",
     "dev": "nodemon --watch src --watch generated --ext ts,json --exec tsx src/server.ts",
     "start": "npx tsx src/server.ts"
   },
@@ -21,6 +23,7 @@
     "@types/nodemailer": "^8.0.1",
     "@types/pg": "^8.23.1",
     "nodemon": "^3.1.14",
+    "socket.io-client": "^4.8.3",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2"
   },
@@ -36,6 +39,7 @@
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^10.0.3",
     "pg": "^8.23.0",
-    "prisma": "^7.10.0"
+    "prisma": "^7.10.0",
+    "socket.io": "^4.8.3"
   }
 }

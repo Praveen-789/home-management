@@ -2,6 +2,8 @@
 
 Documentation for the currently implemented endpoints.
 
+Household/private chat, live socket events, device registration, and chat push delivery are documented in [CHAT.md](CHAT.md).
+
 ## Local server
 
 Base URL: `http://localhost:3000/api`

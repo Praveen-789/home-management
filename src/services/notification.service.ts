@@ -6,6 +6,7 @@ import { AppError } from "../lib/errors.js";
 export const NOTIFICATION_TYPES = [
   "TASK_ASSIGNED", "TASK_COMPLETED", "EXPENSE_ADDED", "EXPENSE_UPDATED",
   "HOUSEHOLD_INVITATION", "INVITATION_DECLINED", "MEMBER_JOINED", "MEMBER_REMOVED",
+  "CHAT_MESSAGE",
 ] as const;
 export type NotificationType = typeof NOTIFICATION_TYPES[number];
 

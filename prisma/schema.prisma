@@ -49,17 +49,23 @@ model User {
   googleId  String?  @unique
   createdAt DateTime @default(now())
 
-  memberships       HouseholdMember[]
-  createdHouseholds Household[]       @relation("HouseholdCreator")
-  createdTasks      Task[]            @relation("TaskCreator")
-  assignedTasks     Task[]            @relation("TaskAssignee")
-  paidExpenses      Expense[]         @relation("ExpensePayer")
-  createdExpenses   Expense[]         @relation("ExpenseCreator")
-  uploadedImages    Image[]
-  passwordResets    PasswordReset[]
-  notifications     Notification[]
-  receivedInvitations HouseholdInvitation[] @relation("InvitationRecipient")
-  sentInvitations     HouseholdInvitation[] @relation("InvitationSender")
+  memberships         HouseholdMember[]
+  createdHouseholds   Household[]               @relation("HouseholdCreator")
+  createdTasks        Task[]                    @relation("TaskCreator")
+  assignedTasks       Task[]                    @relation("TaskAssignee")
+  paidExpenses        Expense[]                 @relation("ExpensePayer")
+  createdExpenses     Expense[]                 @relation("ExpenseCreator")
+  uploadedImages      Image[]
+  passwordResets      PasswordReset[]
+  notifications       Notification[]
+  receivedInvitations HouseholdInvitation[]     @relation("InvitationRecipient")
+  sentInvitations     HouseholdInvitation[]     @relation("InvitationSender")
+  chatStates          ConversationParticipant[]
+  chatMessages        Message[]
+  deletedChatMessages Message[]                 @relation("MessageDeletedBy")
+  hiddenChatMessages  MessageDeletion[]
+  deviceTokens        DeviceToken[]
+  chatDeliveries      ChatDelivery[]
 }
 
 model Household {
@@ -69,12 +75,13 @@ model Household {
   name        String
   createdAt   DateTime @default(now())
 
-  members  HouseholdMember[]
-  tasks    Task[]
-  expenses Expense[]
-  images   Image[]
+  members       HouseholdMember[]
+  tasks         Task[]
+  expenses      Expense[]
+  images        Image[]
   notifications Notification[]
   invitations   HouseholdInvitation[]
+  conversations Conversation[]
 
   @@unique([createdById, name])
 }
@@ -218,9 +225,127 @@ model Notification {
 
   createdAt DateTime @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
   household Household? @relation(fields: [householdId], references: [id], onDelete: SetNull)
 
   @@index([userId, isRead])
   @@index([userId, createdAt])
+}
+
+enum ConversationType {
+  HOUSEHOLD
+  DIRECT
+}
+
+enum ChatDeliveryKind {
+  LIVE
+  PUSH
+}
+
+// One HOUSEHOLD key, or a canonical JSON pair of user IDs for a DIRECT chat.
+model Conversation {
+  id           String                    @id @default(uuid())
+  householdId  String
+  type         ConversationType
+  key          String
+  sequence     Int                       @default(0)
+  createdAt    DateTime                  @default(now())
+  updatedAt    DateTime                  @updatedAt
+  household    Household                 @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@unique([householdId, key])
+  @@index([householdId, updatedAt, id])
+}
+
+// DIRECT rows define the immutable pair. HOUSEHOLD rows are only read/mute
+// preferences: current HouseholdMember rows always control household access.
+// clearedSequence is this user's "Clear chat" marker: messages at or below it are hidden
+// from them only, and stay visible to everyone else.
+model ConversationParticipant {
+  conversationId   String
+  userId           String
+  lastReadSequence Int          @default(0)
+  clearedSequence  Int          @default(0)
+  muted            Boolean      @default(false)
+  conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user             User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id              String            @id @default(uuid())
+  conversationId  String
+  senderId        String
+  clientMessageId String
+  sequence        Int
+  text            String
+  deletedAt       DateTime?
+  deletedById     String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  conversation    Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender          User              @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  deletedBy       User?             @relation("MessageDeletedBy", fields: [deletedById], references: [id], onDelete: Restrict)
+  hiddenFor       MessageDeletion[]
+  deliveries      ChatDelivery[]
+
+  @@unique([conversationId, sequence])
+  @@unique([conversationId, senderId, clientMessageId])
+  @@index([senderId, createdAt])
+}
+
+// A per-user tombstone for "Delete for me". The message remains available to
+// the other conversation members and can still be deleted for everyone later.
+model MessageDeletion {
+  messageId String
+  userId    String
+  createdAt DateTime @default(now())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, userId])
+  @@index([userId, createdAt])
+}
+
+model DeviceToken {
+  id         String         @id @default(uuid())
+  userId     String
+  token      String         @unique
+  platform   String
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries ChatDelivery[]
+
+  @@index([userId])
+}
+
+// Transactional outbox, one live job per recipient and push job per device.
+// ticketId switches a PUSH job from sending to polling Expo receipts.
+model ChatDelivery {
+  id            String           @id @default(uuid())
+  key           String           @unique
+  kind          ChatDeliveryKind
+  messageId     String
+  userId        String
+  deviceTokenId String?
+  attempts      Int              @default(0)
+  availableAt   DateTime         @default(now())
+  leaseId       String?
+  leaseUntil    DateTime?
+  ticketId      String?
+  ticketAt      DateTime?
+  completedAt   DateTime?
+  failedAt      DateTime?
+  lastError     String?
+  createdAt     DateTime         @default(now())
+  message       Message          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceToken   DeviceToken?     @relation(fields: [deviceTokenId], references: [id], onDelete: Cascade)
+
+  @@index([completedAt, failedAt, kind, availableAt])
 }
