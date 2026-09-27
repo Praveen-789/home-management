@@ -24,6 +24,7 @@ IDs and timestamps below are examples; the server generates actual values.
 | POST | `/api/auth/register` | None | Register a user |
 | POST | `/api/auth/login` | None | Obtain a JWT |
 | POST | `/api/households` | Bearer JWT | Create a household and its owner membership |
+| GET | `/api/users/me` | Bearer JWT | The signed-in user's profile, see [Profile pictures](#profile-pictures) |
 
 ## Authentication
 
@@ -63,7 +64,8 @@ Login tokens expire after 7 days. Log in again to obtain a new token. The househ
   "user": {
     "id": "11111111-1111-4111-8111-111111111111",
     "name": "Praveen",
-    "email": "praveen@example.com"
+    "email": "praveen@example.com",
+    "avatarUrl": null
   }
 }
 ```
@@ -103,7 +105,8 @@ Both fields must be strings. Email and password are used as supplied, without tr
   "user": {
     "id": "11111111-1111-4111-8111-111111111111",
     "name": "Praveen",
-    "email": "praveen@example.com"
+    "email": "praveen@example.com",
+    "avatarUrl": null
   }
 }
 ```
@@ -296,7 +299,7 @@ GET returns:
     {
       "id": "membership-id",
       "role": "OWNER",
-      "user": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }
+      "user": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null }
     }
   ]
 }
@@ -340,9 +343,9 @@ Nobody joins a household without agreeing to it. An owner or admin invites a reg
   "id": "invitation-id",
   "role": "MEMBER",
   "createdAt": "2026-09-20T10:00:00.000Z",
-  "household": { "id": "household-id", "name": "Family Home" },
-  "invitedUser": { "id": "user-id", "name": "Asha", "email": "asha@example.com" },
-  "invitedBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }
+  "household": { "id": "household-id", "name": "Family Home", "pictureUrl": null },
+  "invitedUser": { "id": "user-id", "name": "Asha", "email": "asha@example.com", "avatarUrl": null },
+  "invitedBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null }
 }
 ```
 
@@ -386,11 +389,14 @@ Returns all households the requester belongs to, including households created by
       "id": "household-id",
       "name": "My Home",
       "createdAt": "2026-09-01T00:00:00.000Z",
+      "pictureUrl": null,
       "role": "OWNER"
     }
   ]
 }
 ```
+
+`pictureUrl` is the household's picture, or `null` when none is set. See [Profile pictures](#profile-pictures).
 
 A user with no memberships receives `200` with `households: []`. No other members or user details are returned. Invalid/missing tokens return `401`; unexpected failures return `500` with `Failed to fetch households`. A valid token for a deleted user also yields an empty list because they have no memberships.
 
@@ -434,8 +440,8 @@ PATCH accepts any subset of these fields and changes only what is sent. Send `nu
     "dueDate": "2026-09-10T18:00:00.000Z",
     "createdAt": "2026-09-08T07:00:00.000Z",
     "updatedAt": "2026-09-08T07:00:00.000Z",
-    "createdBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" },
-    "assignedTo": { "id": "other-user-id", "name": "Ravi", "email": "ravi@example.com" }
+    "createdBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null },
+    "assignedTo": { "id": "other-user-id", "name": "Ravi", "email": "ravi@example.com", "avatarUrl": null }
   }
 }
 ```
@@ -529,8 +535,8 @@ PATCH accepts any subset of these fields and changes only what is sent. Send `nu
     "category": "GROCERIES",
     "createdAt": "2026-09-10T07:00:00.000Z",
     "updatedAt": "2026-09-10T07:00:00.000Z",
-    "paidBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" },
-    "createdBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" },
+    "paidBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null },
+    "createdBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null },
     "task": { "id": "task-id", "title": "Buy groceries", "status": "DONE" }
   }
 }
@@ -579,7 +585,7 @@ Expenses are ordered by creation time (newest first), then ID, so pages stay sta
       { "category": "RENT", "total": "1249.75", "count": 1 }
     ],
     "byPayer": [
-      { "paidBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }, "total": "3450.00", "count": 3 }
+      { "paidBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null }, "total": "3450.00", "count": 3 }
     ]
   }
 }
@@ -664,7 +670,7 @@ Every task and expense response now includes `images`, oldest first:
     "bytes": 345678,
     "format": "jpg",
     "createdAt": "2026-09-10T12:00:00.000Z",
-    "uploadedBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com" }
+    "uploadedBy": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null }
   }
 ]
 ```
@@ -699,6 +705,56 @@ npx prisma generate
 ```
 
 Image HTTP tests in `tests/image.test.mjs` cover the ticket's fields and signature, folder checks, duplicate and limit rules, every role and ownership combination for tasks and expenses, body validation, and the Cloudinary cleanup after removals and parent deletes, with the Cloudinary SDK mocked.
+
+## Profile pictures
+
+A user can have one profile picture and a household can have one picture. Both use the same direct-to-Cloudinary flow as [Images](#images): ask for a ticket, upload the file to Cloudinary, then tell the API which file to use.
+
+| Method | Path | Who | Body | Success |
+| --- | --- | --- | --- | --- |
+| GET | `/api/users/me` | Signed-in user | None | 200 `{ message, user }` |
+| POST | `/api/users/me/avatar/uploads` | Signed-in user | None | 201 `{ message, upload }` |
+| PUT | `/api/users/me/avatar` | Signed-in user | `{ "publicId" }` | 200 `{ message, user }` |
+| DELETE | `/api/users/me/avatar` | Signed-in user | None | 200 `{ message, user }` |
+| POST | `/api/households/:householdId/picture/uploads` | OWNER, ADMIN | None | 201 `{ message, upload }` |
+| PUT | `/api/households/:householdId/picture` | OWNER, ADMIN | `{ "publicId" }` | 200 `{ message, household }` |
+| DELETE | `/api/households/:householdId/picture` | OWNER, ADMIN | None | 200 `{ message, household }` |
+
+`me` is always the user in the token, so no route can name another person. `upload` is the same ticket shape as for images. `publicId` is the ticket's `publicId`, sent back after Cloudinary accepted the file.
+
+### Where the picture appears
+
+Every user object in this API now has `avatarUrl`, which is `null` until a picture is set:
+
+```json
+{ "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": "https://res.cloudinary.com/<cloud>/image/upload/c_fill,g_face,w_400,h_400,f_auto,q_auto/homehub/users/<userId>/<uuid>" }
+```
+
+That covers the `user` from register, login, Google sign-in and `/users/me`, household members, invitation senders and recipients, task and expense people, and image uploaders. Chat senders and participants are `{ id, name, avatarUrl }` without the email, and the same object travels in the `chat:message` socket event. All of these read one shared field list in `src/lib/user-select.ts`, so a person looks the same everywhere.
+
+A household carries `pictureUrl` in `GET /api/households`, in the `household` returned by the picture routes (`{ id, name, createdAt, pictureUrl, role }`, the same shape as a list entry), and in the `household` of an invitation.
+
+### How pictures are stored and delivered
+
+- Avatars are uploaded to `homehub/users/<userId>/<uuid>`, household pictures to `homehub/households/<householdId>/picture/<uuid>`. The folder contains the owner's ID, so the server can refuse a file that was signed for someone else (`400`). A household picture sits one level below the household's photos, so it can never be attached to a task or expense, and a photo can never become a picture. Chat photos follow the same rule one level further down, in `homehub/households/<householdId>/chat/<conversationId>/<uuid>` (see [CHAT.md](CHAT.md#photos)).
+- Every upload gets a new random ID, so a changed picture has a new URL and no phone keeps showing the old one from its cache.
+- Postgres stores two columns per owner: the public ID, which Cloudinary needs to delete the file, and the delivery URL, ready to show. The URL is stored instead of being built on every read because a person appears nested inside many other records.
+- Cloudinary crops on delivery to a 400 pixel square. Avatars use `g_face`, which keeps the face in the middle even when the upload was not square. Household pictures use `g_auto`.
+- Setting a new picture or removing one deletes the previous Cloudinary file after the database change is committed. As with images, that call is best-effort.
+- The URL is unguessable but public, like task and expense photos. Someone who leaves a household keeps any URL their phone already loaded.
+
+### Errors
+
+`400` `Image public ID is required`, `Image does not belong to this account` or `Image does not belong to this household`. `401` without a valid token, and `Account no longer exists` when the token's user was deleted. `403` `Only owners and admins can change the household picture`. `404` `Household not found or access denied` for a nonmember. `503` when `CLOUDINARY_URL` is missing.
+
+This module requires the `add_profile_pictures` migration, which adds four nullable columns and needs no backfill:
+
+```sh
+npx prisma migrate deploy
+npx prisma generate
+```
+
+`tests/profile-picture.test.mjs` covers the shared user fields, the folder rules, authentication on every route, the profile, tickets, set, replace and remove for both owners, every household role, and the Cloudinary cleanup, with the Cloudinary SDK mocked.
 
 ## Forgot password
 
@@ -879,7 +935,7 @@ Use an ID token, not a Google access token. Send it over HTTPS in deployed envir
 ```json
 {
   "message": "Login successful",
-  "user": { "id": "user-id", "name": "Alice", "email": "alice@gmail.com" },
+  "user": { "id": "user-id", "name": "Alice", "email": "alice@gmail.com", "avatarUrl": null },
   "isNewUser": false,
   "token": "<HomeHub JWT>"
 }
@@ -900,7 +956,7 @@ First log in using the existing email and password. Then call `POST /api/auth/go
 
 The authenticated user comes from the HomeHub JWT, not the body. Linking requires the current password and a verified Google email matching the HomeHub email (ignoring case). A Google account cannot belong to two HomeHub users, and this endpoint cannot replace a different Google account already linked. Repeating a successful link to the same account is allowed.
 
-Success: 200 `{ "message": "Google account linked successfully", "user": { "id", "name", "email" } }`.
+Success: 200 `{ "message": "Google account linked successfully", "user": { "id", "name", "email", "avatarUrl" } }`.
 
 Linking preserves the user ID, password, memberships, tasks, expenses, and notifications. Afterwards both login methods work. Unlinking, changing the account email, and adding a password to a Google-only account are not implemented.
 

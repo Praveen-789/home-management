@@ -1,7 +1,10 @@
 import type { Response } from "express";
 import type { AuthenticatedRequest } from "../middleware/auth.middleware.js";
-import { createHousehold, listHouseholds } from "../services/household.service.js";
+import {
+  createHousehold, listHouseholds, removeHouseholdPicture, requestPictureUpload, setHouseholdPicture,
+} from "../services/household.service.js";
 import { AppError } from "../lib/errors.js";
+import { handleHouseholdRequest, readId } from "../lib/controller.js";
 
 export const create = async (req: AuthenticatedRequest, res: Response) => {
   if (!req.userId) {
@@ -47,3 +50,20 @@ export const list = async (req: AuthenticatedRequest, res: Response) => {
     return res.status(500).json({ message: "Failed to fetch households" });
   }
 };
+
+const handlePicture = handleHouseholdRequest("Failed to update the household picture");
+
+export const authorizePictureUpload = handlePicture(async (_req, res, householdId, requesterId) => {
+  const upload = await requestPictureUpload(householdId, requesterId);
+  return res.status(201).json({ message: "Upload authorized", upload });
+});
+
+export const updatePicture = handlePicture(async (req, res, householdId, requesterId) => {
+  const household = await setHouseholdPicture(householdId, requesterId, readId(req.body?.publicId, "Image public ID"));
+  return res.status(200).json({ message: "Household picture updated successfully", household });
+});
+
+export const deletePicture = handlePicture(async (_req, res, householdId, requesterId) => {
+  const household = await removeHouseholdPicture(householdId, requesterId);
+  return res.status(200).json({ message: "Household picture removed successfully", household });
+});

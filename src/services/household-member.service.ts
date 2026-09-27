@@ -7,6 +7,7 @@ import {
   requireManageableRole,
   requireMemberManagement,
 } from "./household-access.service.js";
+import { userSummary } from "../lib/user-select.js";
 
 export type AssignableRole = "ADMIN" | "MEMBER";
 
@@ -17,13 +18,7 @@ export type MemberTarget = { userId: string } | { email: string };
 const memberSelect = {
   id: true,
   role: true,
-  user: {
-    select: {
-      id: true,
-      name: true,
-      email: true,
-    },
-  },
+  user: userSummary,
 } satisfies Prisma.HouseholdMemberSelect;
 
 export async function listHouseholdMembers(

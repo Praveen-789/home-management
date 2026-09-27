@@ -11,8 +11,8 @@ const originalTransaction = prisma.$transaction;
 let server, api, db;
 // 'actor' is whoever holds the token: the inviter on the household side, the invited user on /api/invitations.
 const token = signToken({ userId: 'actor', email: 'actor@example.com' });
-const userSelect = { select: { id: true, name: true, email: true } };
-const invitationSelect = { id: true, role: true, createdAt: true, household: { select: { id: true, name: true } }, invitedUser: userSelect, invitedBy: userSelect };
+const userSelect = { select: { id: true, name: true, email: true, avatarUrl: true } };
+const invitationSelect = { id: true, role: true, createdAt: true, household: { select: { id: true, name: true, pictureUrl: true } }, invitedUser: userSelect, invitedBy: userSelect };
 const invitationOrder = [{ createdAt: 'desc' }, { id: 'desc' }];
 const household = { id: 'home', name: 'Family Home' };
 const invitation = {

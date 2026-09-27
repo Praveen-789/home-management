@@ -18,6 +18,11 @@ export const requireMemberManagement = (role: HouseholdRole) => {
   if (role === "MEMBER") throw new AppError("You cannot manage household members", 403);
 };
 
+// The picture represents the whole household, so it follows the same rule as managing members.
+export const requirePictureManagement = (role: HouseholdRole) => {
+  if (role === "MEMBER") throw new AppError("Only owners and admins can change the household picture", 403);
+};
+
 export const requireManageableRole = (actor: HouseholdRole, target: HouseholdRole) => {
   requireMemberManagement(actor);
   if (target === "OWNER") {

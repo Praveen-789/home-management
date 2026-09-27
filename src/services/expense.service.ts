@@ -5,6 +5,7 @@ import { withSerializableTransaction, type TransactionMessages } from "../lib/tr
 import { requireHouseholdMember } from "./household-access.service.js";
 import { attachImage, detachImage, imagePublicIds, imagesSelect, toImageView, type ImageInput, type ImageRow } from "./image.service.js";
 import { imageStorage } from "../lib/cloudinary.js";
+import { userSummary } from "../lib/user-select.js";
 
 // Fields a client may set. amount is a validated decimal string such as "1250.00",
 // so no value passes through a float. Nullable fields accept null to clear them.
@@ -30,8 +31,6 @@ export type ExpenseFilter = {
 
 // Filter and paging for the list endpoint. page is 1-based.
 export type ExpenseListQuery = ExpenseFilter & { page: number; limit: number };
-
-const userSummary = { select: { id: true, name: true, email: true } } as const;
 
 // Fields returned to the controller. User passwords are never selected.
 const expenseSelect = {

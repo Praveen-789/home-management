@@ -3,8 +3,9 @@ import { verifyGoogleToken } from "../lib/google-auth.js";
 import { signToken } from "../lib/jwt.js";
 import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction } from "../lib/transaction.js";
+import { userFields } from "../lib/user-select.js";
 
-const publicUser = { id: true, name: true, email: true } as const;
+const publicUser = userFields;
 const transactionMessages = {
   conflict: "Account changed or already exists; please retry or sign in to your existing account",
   missing: "Account no longer exists",

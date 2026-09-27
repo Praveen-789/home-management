@@ -5,6 +5,7 @@ import { withSerializableTransaction, type TransactionMessages } from "../lib/tr
 import { requireHouseholdMember } from "./household-access.service.js";
 import { attachImage, detachImage, imagePublicIds, imagesSelect, withImages, type ImageInput } from "./image.service.js";
 import { imageStorage } from "../lib/cloudinary.js";
+import { userSummary } from "../lib/user-select.js";
 
 // Fields a client may set. Nullable fields accept null to clear them.
 export type TaskInput = {
@@ -25,8 +26,6 @@ export type TaskListQuery = {
   page: number;
   limit: number;
 };
-
-const userSummary = { select: { id: true, name: true, email: true } } as const;
 
 // Fields returned to the controller. User passwords are never selected.
 const taskSelect = {

@@ -47,6 +47,10 @@ model User {
   email     String   @unique
   password  String?
   googleId  String?  @unique
+  // Profile picture. Cloudinary needs the public ID to delete the file. The URL is stored ready to
+  // show, because a person appears inside many other records and none of them has to build it.
+  avatarPublicId String?
+  avatarUrl      String?
   createdAt DateTime @default(now())
 
   memberships         HouseholdMember[]
@@ -66,6 +70,7 @@ model User {
   hiddenChatMessages  MessageDeletion[]
   deviceTokens        DeviceToken[]
   chatDeliveries      ChatDelivery[]
+  chatReceipts        ChatReceipt[]
 }
 
 model Household {
@@ -73,6 +78,9 @@ model Household {
   createdBy   User     @relation("HouseholdCreator", fields: [createdById], references: [id], onDelete: Restrict)
   id          String   @id @default(uuid())
   name        String
+  // Household picture, stored the same way as a user's avatar.
+  picturePublicId String?
+  pictureUrl      String?
   createdAt   DateTime @default(now())
 
   members       HouseholdMember[]
@@ -168,14 +176,16 @@ model Expense {
   @@index([paidById])
 }
 
-// A photo stored in Cloudinary and attached to exactly one task or one expense; the migration adds
-// a check constraint for that. Only the Cloudinary public ID is stored; URLs are derived from it.
-// Deleting the parent deletes the row, and the service then removes the file from Cloudinary.
+// A photo stored in Cloudinary and attached to exactly one task, expense or chat message; the
+// migration adds a check constraint for that. Only the Cloudinary public ID is stored; URLs are
+// derived from it. Deleting the parent deletes the row, and the service then removes the file
+// from Cloudinary.
 model Image {
   id           String   @id @default(uuid())
   householdId  String
   taskId       String?
   expenseId    String?
+  messageId    String?
   publicId     String   @unique
   width        Int
   height       Int
@@ -187,10 +197,12 @@ model Image {
   household  Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
   task       Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   expense    Expense?  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  message    Message?  @relation(fields: [messageId], references: [id], onDelete: Cascade)
   uploadedBy User      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
 
   @@index([taskId])
   @@index([expenseId])
+  @@index([messageId])
 }
 
 // A one-time code for resetting a forgotten password. Only the SHA-256 hash is stored; the code
@@ -242,6 +254,11 @@ enum ChatDeliveryKind {
   PUSH
 }
 
+enum ChatReceiptKind {
+  DELIVERED
+  READ
+}
+
 // One HOUSEHOLD key, or a canonical JSON pair of user IDs for a DIRECT chat.
 model Conversation {
   id           String                    @id @default(uuid())
@@ -254,6 +271,7 @@ model Conversation {
   household    Household                 @relation(fields: [householdId], references: [id], onDelete: Cascade)
   participants ConversationParticipant[]
   messages     Message[]
+  receipts     ChatReceipt[]
 
   @@unique([householdId, key])
   @@index([householdId, updatedAt, id])
@@ -263,10 +281,13 @@ model Conversation {
 // preferences: current HouseholdMember rows always control household access.
 // clearedSequence is this user's "Clear chat" marker: messages at or below it are hidden
 // from them only, and stay visible to everyone else.
+// deliveredSequence is how far this user's phone has received messages. It is never behind
+// lastReadSequence, because a message that was read must have arrived.
 model ConversationParticipant {
   conversationId   String
   userId           String
   lastReadSequence Int          @default(0)
+  deliveredSequence Int         @default(0)
   clearedSequence  Int          @default(0)
   muted            Boolean      @default(false)
   conversation     Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -276,6 +297,26 @@ model ConversationParticipant {
   @@index([userId])
 }
 
+// A log of the moments a user's delivered or read position moved forward. One row covers every
+// message up to `sequence`, so reading ten messages at once is one row, not ten. The time a user
+// read message N is their earliest READ row with sequence >= N, because positions only grow.
+model ChatReceipt {
+  id             String          @id @default(uuid())
+  conversationId String
+  userId         String
+  kind           ChatReceiptKind
+  sequence       Int
+  createdAt      DateTime        @default(now())
+  conversation   Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Also the index the "who read this message" lookup walks.
+  @@unique([conversationId, kind, userId, sequence])
+}
+
+// `text` is the message, or a photo's caption. A photo message may have an empty caption; the
+// service makes sure every message carries text, a photo, or both. `editedAt` is when the sender
+// last changed the text, and null for a message never edited.
 model Message {
   id              String            @id @default(uuid())
   conversationId  String
@@ -283,6 +324,7 @@ model Message {
   clientMessageId String
   sequence        Int
   text            String
+  editedAt        DateTime?
   deletedAt       DateTime?
   deletedById     String?
   createdAt       DateTime          @default(now())
@@ -292,6 +334,7 @@ model Message {
   deletedBy       User?             @relation("MessageDeletedBy", fields: [deletedById], references: [id], onDelete: Restrict)
   hiddenFor       MessageDeletion[]
   deliveries      ChatDelivery[]
+  images          Image[]
 
   @@unique([conversationId, sequence])
   @@unique([conversationId, senderId, clientMessageId])

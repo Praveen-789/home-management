@@ -4,8 +4,7 @@ import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
 import { requireHouseholdMember, requireManageableRole } from "./household-access.service.js";
 import type { AssignableRole, MemberTarget } from "./household-member.service.js";
-
-const userSummary = { select: { id: true, name: true, email: true } } as const;
+import { userSummary } from "../lib/user-select.js";
 
 // Fields returned to the controller, for the invited user and for the household alike.
 // User passwords are never selected.
@@ -13,7 +12,7 @@ const invitationSelect = {
   id: true,
   role: true,
   createdAt: true,
-  household: { select: { id: true, name: true } },
+  household: { select: { id: true, name: true, pictureUrl: true } },
   invitedUser: userSummary,
   invitedBy: userSummary,
 } satisfies Prisma.HouseholdInvitationSelect;

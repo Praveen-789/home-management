@@ -10,7 +10,7 @@ const { Prisma } = await import('../generated/prisma/client.ts');
 const originalTransaction = prisma.$transaction;
 let server, base, db;
 const token = signToken({ userId: 'actor', email: 'actor@example.com' });
-const userSelect = { select: { id: true, name: true, email: true } };
+const userSelect = { select: { id: true, name: true, email: true, avatarUrl: true } };
 const imageSelect = { id: true, publicId: true, width: true, height: true, bytes: true, format: true, createdAt: true, uploadedBy: userSelect };
 const taskSelect = { id: true, householdId: true, title: true, description: true, status: true, priority: true, dueDate: true, createdAt: true, updatedAt: true, createdBy: userSelect, assignedTo: userSelect, images: { select: imageSelect, orderBy: { createdAt: 'asc' } } };
 const taskOrder = [{ dueDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'asc' }];

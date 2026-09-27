@@ -131,12 +131,12 @@ test("lists JWT user's memberships with their role, including households they di
     assert.deepEqual(args.where, { userId: "U1" });
     assert.deepEqual(args.select, {
       role: true,
-      household: { select: { id: true, name: true, createdAt: true } },
+      household: { select: { id: true, name: true, createdAt: true, pictureUrl: true } },
     });
     assert.deepEqual(args.orderBy, [{ household: { createdAt: "desc" } }, { householdId: "asc" }]);
     return [
-      { role: "OWNER", household: { id: "H1", name: "My home", createdAt } },
-      { role: "ADMIN", household: { id: "H2", name: "Shared home", createdAt } },
+      { role: "OWNER", household: { id: "H1", name: "My home", createdAt, pictureUrl: "https://res.cloudinary.com/demo/h1" } },
+      { role: "ADMIN", household: { id: "H2", name: "Shared home", createdAt, pictureUrl: null } },
       { role: "MEMBER", household: { id: "H3", name: "Family home", createdAt } },
     ];
   });
@@ -145,8 +145,9 @@ test("lists JWT user's memberships with their role, including households they di
   assert.deepEqual(await response.json(), {
     message: "Households fetched successfully",
     households: [
-      { id: "H1", name: "My home", createdAt: createdAt.toISOString(), role: "OWNER" },
-      { id: "H2", name: "Shared home", createdAt: createdAt.toISOString(), role: "ADMIN" },
+      // Each household carries its picture, or null when nobody has set one.
+      { id: "H1", name: "My home", createdAt: createdAt.toISOString(), pictureUrl: "https://res.cloudinary.com/demo/h1", role: "OWNER" },
+      { id: "H2", name: "Shared home", createdAt: createdAt.toISOString(), pictureUrl: null, role: "ADMIN" },
       { id: "H3", name: "Family home", createdAt: createdAt.toISOString(), role: "MEMBER" },
     ],
   });

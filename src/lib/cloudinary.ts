@@ -24,12 +24,22 @@ const INCOMING_TRANSFORMATION = "c_limit,w_2000,h_2000";
 export const SIGNATURE_TTL_SECONDS = 60 * 60;
 
 export const imageFolder = (householdId: string) => `${IMAGE_ROOT}/${householdId}`;
+// A user can belong to several households, so an avatar lives under the user, not a household.
+export const avatarFolder = (userId: string) => `homehub/users/${userId}`;
+// One level below the household's photos, so a picture can never pass as a task or expense photo.
+export const pictureFolder = (householdId: string) => `${imageFolder(householdId)}/picture`;
+// Chat photos sit below the household too, one folder per conversation, so a photo uploaded for one
+// chat cannot be sent in another or attached to a task.
+export const chatFolder = (householdId: string, conversationId: string) => `${imageFolder(householdId)}/chat/${conversationId}`;
 
-// Whether a public ID is one this server would have signed for the household.
-export function isHouseholdImage(householdId: string, publicId: string): boolean {
-  const prefix = `${imageFolder(householdId)}/`;
+// Whether a public ID is one this server would have signed for the folder: the folder itself,
+// then a UUID, and nothing deeper.
+export function isImageIn(folder: string, publicId: string): boolean {
+  const prefix = `${folder}/`;
   return publicId.startsWith(prefix) && /^[0-9a-f-]{36}$/.test(publicId.slice(prefix.length));
 }
+
+export const isHouseholdImage = (householdId: string, publicId: string) => isImageIn(imageFolder(householdId), publicId);
 
 type Credentials = { cloudName: string; apiKey: string; apiSecret: string };
 
@@ -58,16 +68,19 @@ export type UploadTicket = {
   expiresAt: string;
 };
 
-export function createUploadTicket(householdId: string, now = new Date()): UploadTicket {
+// The folder decides who the upload belongs to: imageFolder, avatarFolder, pictureFolder or chatFolder.
+export function createUploadTicket(folder: string, now = new Date()): UploadTicket {
   const { cloudName, apiKey, apiSecret } = credentials();
   const timestamp = Math.floor(now.getTime() / 1000);
-  const publicId = `${imageFolder(householdId)}/${randomUUID()}`;
-  // asset_folder files the upload under the household in the Media Library. Accounts in dynamic
+  // A new random ID for every upload, so a replaced picture gets a new URL and no phone keeps
+  // showing the old one from its cache.
+  const publicId = `${folder}/${randomUUID()}`;
+  // asset_folder files the upload under its owner in the Media Library. Accounts in dynamic
   // folder mode keep that separate from the public ID, which alone would leave it in the root.
   const params = {
     timestamp,
     public_id: publicId,
-    asset_folder: imageFolder(householdId),
+    asset_folder: folder,
     allowed_formats: ALLOWED_FORMATS.join(","),
     transformation: INCOMING_TRANSFORMATION,
   };
@@ -91,6 +104,12 @@ export function imageUrls(publicId: string): { url: string; thumbnailUrl: string
     url: `${base}/f_auto,q_auto/${publicId}`,
     thumbnailUrl: `${base}/c_fill,g_auto,w_400,h_400,f_auto,q_auto/${publicId}`,
   };
+}
+
+// Profile pictures are shown small and square, so Cloudinary crops them on delivery. "face" keeps
+// a person's face in the middle even when the upload was not square. "auto" suits a household.
+export function profileImageUrl(publicId: string, gravity: "face" | "auto"): string {
+  return `https://res.cloudinary.com/${credentials().cloudName}/image/upload/c_fill,g_${gravity},w_400,h_400,f_auto,q_auto/${publicId}`;
 }
 
 // Removal is best-effort and runs after the database rows are gone: a Cloudinary outage must not

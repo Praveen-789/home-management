@@ -18,7 +18,7 @@ const { v2: cloudinary } = createRequire(import.meta.url)('cloudinary');
 const originalTransaction = prisma.$transaction;
 let server, base, db, destroy;
 const token = signToken({ userId: 'actor', email: 'actor@example.com' });
-const userSelect = { select: { id: true, name: true, email: true } };
+const userSelect = { select: { id: true, name: true, email: true, avatarUrl: true } };
 const imageSelect = { id: true, publicId: true, width: true, height: true, bytes: true, format: true, createdAt: true, uploadedBy: userSelect };
 const imagesSelect = { select: imageSelect, orderBy: { createdAt: 'asc' } };
 const publicId = 'homehub/households/home/0f0d3c1e-1111-4222-8333-444455556666';

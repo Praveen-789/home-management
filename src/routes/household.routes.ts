@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth.middleware.js";
-import { create, list as listHouseholds } from "../controllers/household.controller.js";
+import { authorizePictureUpload, create, deletePicture, list as listHouseholds, updatePicture } from "../controllers/household.controller.js";
 import { list, remove, updateRole } from "../controllers/household-member.controller.js";
 import { cancel as cancelInvitation, invite, listForHousehold as listInvitations } from "../controllers/household-invitation.controller.js";
 import taskRoutes from "./task.routes.js";
@@ -20,6 +20,10 @@ router.post("/:householdId/invitations", authenticate, invite);
 router.delete("/:householdId/invitations/:invitationId", authenticate, cancelInvitation);
 // Signs one direct-to-Cloudinary upload for a member; the file is attached to a task or expense afterwards.
 router.post("/:householdId/uploads", authenticate, authorizeUpload);
+// The household's own picture, for owners and admins: sign an upload, then point the household at it.
+router.post("/:householdId/picture/uploads", authenticate, authorizePictureUpload);
+router.put("/:householdId/picture", authenticate, updatePicture);
+router.delete("/:householdId/picture", authenticate, deletePicture);
 router.use("/:householdId/tasks", taskRoutes);
 router.use("/:householdId/expenses", expenseRoutes);
 

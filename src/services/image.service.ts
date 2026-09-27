@@ -1,16 +1,15 @@
 import type { Prisma } from "../../generated/prisma/client.js";
-import { createUploadTicket, imageUrls, isHouseholdImage, type ImageFormat } from "../lib/cloudinary.js";
+import { createUploadTicket, imageFolder, imageUrls, isHouseholdImage, type ImageFormat } from "../lib/cloudinary.js";
 import { AppError } from "../lib/errors.js";
 import { withSerializableTransaction, type TransactionMessages } from "../lib/transaction.js";
 import { requireHouseholdMember } from "./household-access.service.js";
+import { userSummary } from "../lib/user-select.js";
 
 export const MAX_IMAGES = 5;
 
 // What the app reports after Cloudinary accepted an upload. The public ID is the one the server
 // signed; the rest is what Cloudinary said about the stored file.
 export type ImageInput = { publicId: string; width: number; height: number; bytes: number; format: ImageFormat };
-
-const userSummary = { select: { id: true, name: true, email: true } } as const;
 
 export const imageSelect = {
   id: true,
@@ -28,8 +27,9 @@ export const imagesSelect = { select: imageSelect, orderBy: { createdAt: "asc" }
 
 export type ImageRow = Prisma.ImageGetPayload<{ select: typeof imageSelect }>;
 
-// The API shape: the public ID is replaced by the delivery URLs derived from it.
-export const toImageView = ({ publicId, ...image }: ImageRow) => ({ ...image, ...imageUrls(publicId) });
+// The API shape: the public ID is replaced by the delivery URLs derived from it. Chat selects fewer
+// fields than tasks do, so any row with a public ID is accepted.
+export const toImageView = <Row extends { publicId: string }>({ publicId, ...image }: Row) => ({ ...image, ...imageUrls(publicId) });
 
 export const withImages = <Row extends { images: ImageRow[] }>({ images, ...row }: Row) => ({
   ...row,
@@ -49,7 +49,7 @@ const uploadMessages: TransactionMessages = {
 export async function requestUpload(householdId: string, requesterId: string) {
   return withSerializableTransaction(async (tx) => {
     await requireHouseholdMember(tx, householdId, requesterId);
-    return createUploadTicket(householdId);
+    return createUploadTicket(imageFolder(householdId));
   }, uploadMessages);
 }
 

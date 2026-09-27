@@ -51,13 +51,13 @@ beforeEach(() => {
     create: mock.fn(async ({ data, select }) => {
       assert.equal(data.googleId, 'google-123');
       assert.equal(data.password, undefined);
-      assert.deepEqual(select, { id: true, name: true, email: true });
+      assert.deepEqual(select, { id: true, name: true, email: true, avatarUrl: true });
       return safe;
     }),
     update: mock.fn(async ({ where, data, select }) => {
       assert.deepEqual(where, { id: 'local-id' });
       assert.deepEqual(data, { googleId: 'google-123' });
-      assert.deepEqual(select, { id: true, name: true, email: true });
+      assert.deepEqual(select, { id: true, name: true, email: true, avatarUrl: true });
       return safe;
     }),
   } };

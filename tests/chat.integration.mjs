@@ -163,8 +163,10 @@ test('chat REST, privacy, ordering, sockets, outbox and Expo receipts on Postgre
       assert.equal(requests.length, 1);
       assert.equal(requests[0].body.to, 'ExpoPushToken[bob-device]');
       assert.equal(requests[0].body.data.conversationId, direct);
-      assert.equal(requests[0].body.title, 'alice');
-      assert.equal(requests[0].body.body, 'Push me');
+      // An Android push is data-only, so the app can draw it with Reply and Mark as read buttons.
+      assert.equal(requests[0].body.title, undefined);
+      assert.equal(requests[0].body.data.previewTitle, 'alice');
+      assert.equal(requests[0].body.data.previewBody, 'Push me');
       await prisma.chatDelivery.update({ where: { id: push.id }, data: { availableAt: new Date(0) } });
       globalThis.fetch = async () => new Response(JSON.stringify({ data: { 'ticket-test': { status: 'error', details: { error: 'DeviceNotRegistered' } } } }));
       await delivery.processDelivery(await delivery.claimDelivery(true));
@@ -337,6 +339,193 @@ test('chat REST, privacy, ordering, sockets, outbox and Expo receipts on Postgre
       assert.equal((await chat.getMessages(direct, 'alice', { limit: 100 })).messages.length, aliceBefore + 1);
       assert.equal((await request('owner', 'POST', `/conversations/${direct}/clear`)).status, 404);
     });
+    await t.test('photo messages: signed per conversation, optional captions, removed with delete for everyone', async () => {
+      const { imageStorage } = await import('../src/lib/cloudinary.ts');
+      const destroyed = [];
+      const originalDestroy = imageStorage.destroy;
+      // Nothing may reach the real Cloudinary account from a test.
+      imageStorage.destroy = async publicIds => { destroyed.push(...publicIds); };
+      const originalFetchForPush = globalThis.fetch;
+      try {
+        const upload = async (user, conversation) => request(user, 'POST', `/conversations/${conversation}/uploads`);
+        const photo = publicId => ({ publicId, width: 1200, height: 900, bytes: 345678, format: 'JPG' });
+        const send = (user, clientMessageId, body) => request(user, 'POST', `/conversations/${direct}/messages`, { clientMessageId, ...body });
+
+        // ---- a ticket is signed only for someone in the conversation, into its own folder ----
+        const ticket = await upload('alice', direct);
+        assert.equal(ticket.status, 201);
+        const folder = `homehub/households/home/chat/${direct}`;
+        assert.match(ticket.body.upload.publicId, new RegExp(`^${folder}/[0-9a-f-]{36}$`));
+        assert.equal(ticket.body.upload.fields.asset_folder, folder);
+        assert.equal((await upload('owner', direct)).status, 404); // not in this private chat
+        assert.equal((await upload(null, direct)).status, 401);
+        assert.equal((await upload('alice', 'no-such-conversation')).status, 404);
+
+        // ---- a photo with no caption, retried safely ----
+        const sent = await send('alice', 'photo-message', { images: [photo(ticket.body.upload.publicId)] });
+        assert.equal(sent.status, 201);
+        const [image] = sent.body.message.images;
+        assert.equal(sent.body.message.text, '');
+        assert.equal(sent.body.message.images.length, 1);
+        assert.equal(image.publicId, undefined); // URLs travel instead of the public ID
+        assert.ok(image.url.endsWith(`/f_auto,q_auto/${ticket.body.upload.publicId}`));
+        assert.ok(image.thumbnailUrl.includes('/c_fill,g_auto,w_400,h_400,'));
+        assert.deepEqual([image.width, image.height, image.bytes, image.format], [1200, 900, 345678, 'jpg']);
+        const retry = await send('alice', 'photo-message', { images: [photo(ticket.body.upload.publicId)] });
+        assert.equal(retry.status, 200);
+        assert.equal(retry.body.message.id, sent.body.message.id);
+        // The same client ID with a different message, or the same photo in a new message, is refused.
+        assert.equal((await send('alice', 'photo-message', { text: 'Now with a caption', images: [photo(ticket.body.upload.publicId)] })).status, 409);
+        assert.equal((await send('alice', 'photo-message', { text: 'Only text' })).status, 409);
+        assert.equal((await send('alice', 'photo-again', { images: [photo(ticket.body.upload.publicId)] })).status, 409);
+
+        // ---- the other person sees it in history, the chat list, the live event and the alert ----
+        const bobPage = await request('bob', 'GET', `/conversations/${direct}/messages?limit=1`);
+        assert.equal(bobPage.body.messages[0].images[0].url, image.url);
+        const summary = (await request('bob', 'GET', `/conversations/${direct}`)).body.conversation;
+        assert.equal(summary.latestMessage.images[0].thumbnailUrl, image.thumbnailUrl);
+        const live = [];
+        const listener = (user, event, payload) => { if (event === 'chat:message') live.push({ user, payload }); };
+        chatEvents.on('delivery', listener);
+        try {
+          for (const job of await prisma.chatDelivery.findMany({ where: { messageId: sent.body.message.id, kind: 'LIVE' } })) await delivery.processDelivery(job);
+        } finally { chatEvents.off('delivery', listener); }
+        assert.deepEqual(live.map(entry => entry.user).sort(), ['alice', 'bob']);
+        assert.ok(live.every(entry => entry.payload.message.images[0].url === image.url && entry.payload.message.images[0].publicId === undefined));
+        const pushes = [];
+        globalThis.fetch = async (_url, options) => {
+          pushes.push(JSON.parse(options.body));
+          return new Response(JSON.stringify({ data: { status: 'ok', id: 'photo-ticket' } }));
+        };
+        const push = await prisma.chatDelivery.findFirst({ where: { messageId: sent.body.message.id, kind: 'PUSH' } });
+        await delivery.processDelivery(push);
+        assert.equal(pushes[0].data.previewBody, '📷 Photo');
+
+        // ---- only a photo signed for this chat, one per message, with sensible details ----
+        const second = (await upload('alice', direct)).body.upload.publicId;
+        const third = (await upload('alice', direct)).body.upload.publicId;
+        const elsewhere = (await upload('alice', group)).body.upload.publicId;
+        assert.equal((await send('alice', 'other-chat-photo', { images: [photo(elsewhere)] })).status, 400);
+        assert.equal((await send('alice', 'task-photo', { images: [photo(`homehub/households/home/${randomUUID()}`)] })).status, 400);
+        assert.equal((await send('alice', 'two-photos', { images: [photo(second), photo(third)] })).status, 400);
+        assert.equal((await send('alice', 'gif-photo', { images: [{ ...photo(second), format: 'gif' }] })).status, 400);
+        assert.equal((await send('alice', 'zero-width-photo', { images: [{ ...photo(second), width: 0 }] })).status, 400);
+        assert.equal((await send('alice', 'not-a-list', { images: photo(second) })).status, 400);
+        assert.equal((await send('alice', 'numeric-text', { text: 5, images: [photo(second)] })).status, 400);
+        assert.equal((await send('alice', 'nothing-sent', { text: '   ', images: [] })).status, 400);
+        assert.equal((await send('alice', 'long-caption', { text: 'x'.repeat(4001), images: [photo(second)] })).status, 400);
+        assert.equal(await prisma.image.count({ where: { publicId: { in: [second, third, elsewhere] } } }), 0);
+        // The database still refuses whitespace for text, whatever the service does.
+        await assert.rejects(prisma.message.create({ data: { conversationId: direct, senderId: 'alice', clientMessageId: 'blank-text', sequence: 999999, text: '   ' } }));
+
+        // ---- a caption is trimmed, and push shows it behind a camera ----
+        const captioned = await send('alice', 'captioned-photo', { text: '  Leak under the sink ', images: [photo(second)] });
+        assert.equal(captioned.status, 201);
+        assert.equal(captioned.body.message.text, 'Leak under the sink');
+        await delivery.processDelivery(await prisma.chatDelivery.findFirst({ where: { messageId: captioned.body.message.id, kind: 'PUSH' } }));
+        assert.equal(pushes[1].data.previewBody, '📷 Leak under the sink');
+
+        // ---- delete for me keeps the photo for everyone else; delete for everyone removes it ----
+        assert.equal((await remove('bob', [sent.body.message.id], 'me')).status, 200);
+        assert.ok(await prisma.image.findUnique({ where: { publicId: ticket.body.upload.publicId } }));
+        assert.equal((await chat.getMessages(direct, 'alice', { limit: 100 })).messages.find(m => m.id === sent.body.message.id).images.length, 1);
+        const removed = await remove('alice', [captioned.body.message.id], 'everyone');
+        assert.equal(removed.status, 200);
+        assert.deepEqual(removed.body.deletion.messages[0].images, []);
+        assert.equal(removed.body.deletion.messages[0].text, '');
+        assert.equal(await prisma.image.count({ where: { messageId: captioned.body.message.id } }), 0);
+        assert.deepEqual(destroyed, [second]);
+        const reconciled = await request('bob', 'POST', `/conversations/${direct}/messages/reconcile`, { messageIds: [captioned.body.message.id] });
+        assert.deepEqual(reconciled.body.deletedMessages[0].images, []);
+      } finally {
+        imageStorage.destroy = originalDestroy;
+        globalThis.fetch = originalFetchForPush;
+      }
+    });
+    await t.test('editing: sender only, within 15 minutes, heard by everyone who still sees it, caught up by reconcile', async () => {
+      const edit = (user, messageId, text, conversation = direct) =>
+        request(user, 'PATCH', `/conversations/${conversation}/messages/${messageId}`, text === undefined ? {} : { text });
+      const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const heard = { alice: [], bob: [], owner: [] };
+      const phones = { alice: await socket('alice'), bob: await socket('bob'), owner: await socket('owner') };
+      for (const [user, phone] of Object.entries(phones)) phone.on('chat:message-edited', event => heard[user].push(event));
+
+      // ---- the sender changes the text; both people in the chat hear it, nobody else does ----
+      const { message } = await chat.sendMessage(direct, 'alice', 'edit-me', 'Dinner at 7');
+      const bobHears = once(phones.bob, 'chat:message-edited');
+      const edited = await edit('alice', message.id, '  Dinner at 8 ');
+      assert.equal(edited.status, 200);
+      assert.equal(edited.body.message.text, 'Dinner at 8');
+      assert.ok(edited.body.message.editedAt);
+      assert.equal(edited.body.message.sequence, message.sequence); // it keeps its place in the chat
+      assert.equal((await bobHears)[0].message.text, 'Dinner at 8');
+      await pause(100);
+      assert.equal(heard.alice.length, 1); // her other devices
+      assert.equal(heard.owner.length, 0); // not in this private chat
+      assert.equal((await chat.getConversation(direct, 'bob')).latestMessage.text, 'Dinner at 8');
+      // The same text again changes nothing and tells nobody, so a retried request is harmless.
+      const again = await edit('alice', message.id, 'Dinner at 8');
+      assert.equal(again.status, 200);
+      assert.equal(again.body.message.editedAt, edited.body.message.editedAt);
+      await pause(100);
+      assert.equal(heard.bob.length, 1);
+
+      // ---- a push still waiting in the outbox goes out with the new words ----
+      const pushes = [];
+      globalThis.fetch = async (_url, options) => {
+        pushes.push(JSON.parse(options.body));
+        return new Response(JSON.stringify({ data: { status: 'ok', id: 'edit-ticket' } }));
+      };
+      try { await delivery.processDelivery(await prisma.chatDelivery.findFirst({ where: { messageId: message.id, kind: 'PUSH' } })); }
+      finally { globalThis.fetch = originalFetch; }
+      assert.equal(pushes[0].data.previewBody, 'Dinner at 8');
+
+      // ---- who may edit, and what ----
+      assert.equal((await edit('bob', message.id, 'Not mine')).status, 403);
+      assert.equal((await edit('owner', message.id, 'Not my chat')).status, 404);
+      assert.equal((await edit(null, message.id, 'Anyone')).status, 401);
+      assert.equal((await edit('alice', 'no-such-message', 'Anything')).status, 404);
+      assert.equal((await edit('alice', message.id, 'Wrong chat', group)).status, 404);
+      for (const text of ['', '   ', 'x'.repeat(4001), 5]) assert.equal((await edit('alice', message.id, text)).status, 400);
+      assert.equal((await edit('alice', message.id)).status, 400);
+
+      // ---- too late, or already deleted ----
+      const late = (await chat.sendMessage(direct, 'alice', 'edit-too-late', 'Old news')).message;
+      await prisma.message.update({ where: { id: late.id }, data: { createdAt: new Date(Date.now() - 16 * 60_000) } });
+      assert.equal((await edit('alice', late.id, 'Fresh news')).status, 409);
+      const gone = (await chat.sendMessage(direct, 'alice', 'edit-deleted', 'Soon gone')).message;
+      await remove('alice', [gone.id], 'everyone');
+      assert.equal((await edit('alice', gone.id, 'Back again')).status, 409);
+
+      // ---- a photo's caption can change or go; the photo stays ----
+      const ticket = (await request('alice', 'POST', `/conversations/${direct}/uploads`)).body.upload;
+      const photo = (await request('alice', 'POST', `/conversations/${direct}/messages`, {
+        clientMessageId: 'edit-photo', text: 'Before', images: [{ publicId: ticket.publicId, width: 800, height: 600, bytes: 1000, format: 'jpg' }],
+      })).body.message;
+      const uncaptioned = await edit('alice', photo.id, '');
+      assert.equal(uncaptioned.status, 200);
+      assert.equal(uncaptioned.body.message.text, '');
+      assert.equal(uncaptioned.body.message.images.length, 1);
+
+      // ---- someone who hid the message is not handed its new text; nobody edits what they hid ----
+      const hiddenByBob = (await chat.sendMessage(direct, 'alice', 'edit-hidden', 'Bob hides this')).message;
+      await remove('bob', [hiddenByBob.id], 'me');
+      const bobBefore = heard.bob.length;
+      assert.equal((await edit('alice', hiddenByBob.id, 'Bob will not hear this')).status, 200);
+      await pause(100);
+      assert.equal(heard.bob.length, bobBefore);
+      const hiddenByAlice = (await chat.sendMessage(direct, 'alice', 'edit-own-hidden', 'Alice hides this')).message;
+      await remove('alice', [hiddenByAlice.id], 'me');
+      assert.equal((await edit('alice', hiddenByAlice.id, 'Out of sight')).status, 404);
+
+      // ---- a device that was offline catches up when it reconciles ----
+      const reconciled = await request('bob', 'POST', `/conversations/${direct}/messages/reconcile`, {
+        messageIds: [message.id, late.id, hiddenByBob.id, gone.id],
+      });
+      assert.deepEqual(reconciled.body.editedMessages.map(m => [m.id, m.text]), [[message.id, 'Dinner at 8']]);
+      assert.deepEqual(reconciled.body.hiddenMessageIds, [hiddenByBob.id]);
+      assert.deepEqual(reconciled.body.deletedMessages.map(m => m.id), [gone.id]);
+    });
     await t.test('outbox rolls back with message and database enforces unique positions', async () => {
       const original = prisma.$transaction;
       const count = await prisma.message.count();
@@ -362,6 +551,103 @@ test('chat REST, privacy, ordering, sockets, outbox and Expo receipts on Postgre
       await prisma.householdMember.create({ data: { householdId: 'home', userId: 'outsider' } });
       assert.equal((await chat.getMessages(group, 'outsider', { limit: 30 })).messages[0].id, sent.message.id);
       assert.equal((await request('outsider', 'GET', `/conversations/${direct}/messages`)).status, 404);
+    });
+    await t.test('delivered and read receipts: positions, live events, honest times and privacy', async () => {
+      const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const info = async (user, conversation, messageId) => request(user, 'GET', `/conversations/${conversation}/messages/${messageId}/receipts`);
+      const aliceSocket = await socket('alice');
+      const bobSocket = await socket('bob');
+      const aliceHeard = [], bobHeard = [];
+      aliceSocket.on('chat:receipt', event => aliceHeard.push(event));
+      bobSocket.on('chat:receipt', event => bobHeard.push(event));
+
+      // ---- a private chat: sent, then delivered, then read ----
+      const { message } = await chat.sendMessage(direct, 'alice', 'receipt-first', 'Did this arrive?');
+      const before = (await chat.getConversation(direct, 'alice')).receipts;
+      assert.deepEqual(before.map(r => r.userId), ['bob']); // only other people, never the caller
+      assert.ok(before[0].deliveredSequence < message.sequence && before[0].readSequence <= before[0].deliveredSequence);
+      let sheet = await info('alice', direct, message.id);
+      assert.deepEqual(sheet.body.receipts.map(r => [r.user.id, r.delivered, r.read, r.deliveredAt, r.readAt]), [['bob', false, false, null, null]]);
+      assert.equal(sheet.body.receipts[0].user.email, undefined); // chat never exposes email addresses
+
+      let heard = once(aliceSocket, 'chat:receipt');
+      const delivered = await request('bob', 'PATCH', `/conversations/${direct}/delivered`, { sequence: message.sequence });
+      assert.deepEqual(delivered, { status: 200, body: { conversationId: direct, deliveredSequence: message.sequence } });
+      assert.deepEqual((await heard)[0], { conversationId: direct, userId: 'bob', deliveredSequence: message.sequence, readSequence: before[0].readSequence });
+      sheet = await info('alice', direct, message.id);
+      assert.equal(sheet.body.receipts[0].delivered, true);
+      assert.equal(sheet.body.receipts[0].read, false);
+      assert.ok(sheet.body.receipts[0].deliveredAt);
+
+      // A phone that repeats itself, or reports an older position, changes nothing and tells nobody.
+      await request('bob', 'PATCH', `/conversations/${direct}/delivered`, { sequence: message.sequence });
+      await request('bob', 'PATCH', `/conversations/${direct}/delivered`, { sequence: 1 });
+      await pause(150);
+      assert.equal(aliceHeard.length, 1);
+      assert.equal(bobHeard.length, 0); // the person who moved is not told about their own move
+      assert.equal((await request('bob', 'PATCH', `/conversations/${direct}/delivered`, { sequence: 99999 })).status, 400);
+      assert.equal((await request('bob', 'PATCH', `/conversations/${direct}/delivered`, { sequence: -1 })).status, 400);
+
+      heard = once(aliceSocket, 'chat:receipt');
+      const read = await request('bob', 'PATCH', `/conversations/${direct}/read`, { sequence: message.sequence });
+      assert.equal(read.body.receipt, undefined); // the recipient list never leaves the server
+      assert.equal((await heard)[0].readSequence, message.sequence);
+      sheet = await info('alice', direct, message.id);
+      assert.equal(sheet.body.receipts[0].read, true);
+      assert.ok(new Date(sheet.body.receipts[0].readAt) >= new Date(sheet.body.receipts[0].deliveredAt));
+
+      // ---- reading a batch is one log row, and an earlier read keeps its own time ----
+      const batch = [];
+      for (const n of [1, 2, 3]) batch.push((await chat.sendMessage(direct, 'alice', `receipt-batch-${n}`, `Batch ${n}`)).message);
+      const rowsBefore = await prisma.chatReceipt.count({ where: { conversationId: direct, userId: 'bob', kind: 'READ' } });
+      await chat.markConversationRead(direct, 'bob', batch[2].sequence);
+      assert.equal(await prisma.chatReceipt.count({ where: { conversationId: direct, userId: 'bob', kind: 'READ' } }), rowsBefore + 1);
+      // A read also counts as a delivery, so the delivered position never falls behind.
+      const position = await prisma.conversationParticipant.findUnique({ where: { conversationId_userId: { conversationId: direct, userId: 'bob' } } });
+      assert.equal(position.deliveredSequence, batch[2].sequence);
+      const firstRead = (await info('alice', direct, batch[0].id)).body.receipts[0].readAt;
+      assert.equal((await info('alice', direct, batch[2].id)).body.receipts[0].readAt, firstRead); // read together, same time
+      await pause(30);
+      const later = (await chat.sendMessage(direct, 'alice', 'receipt-later', 'One more')).message;
+      await chat.markConversationRead(direct, 'bob', later.sequence);
+      assert.equal((await info('alice', direct, batch[0].id)).body.receipts[0].readAt, firstRead); // not overwritten by the later read
+      assert.ok(new Date((await info('alice', direct, later.id)).body.receipts[0].readAt) > new Date(firstRead));
+
+      // ---- who may ask ----
+      assert.equal((await info('bob', direct, message.id)).status, 403); // only the sender
+      assert.equal((await info('owner', direct, message.id)).status, 404); // not in this private chat
+      assert.equal((await info(null, direct, message.id)).status, 401);
+      assert.equal((await info('alice', direct, 'no-such-message')).status, 404);
+      assert.equal((await info('alice', other, message.id)).status, 404); // a message from another conversation
+      await remove('alice', [later.id], 'everyone');
+      assert.equal((await info('alice', direct, later.id)).status, 409);
+
+      // ---- the household chat: late joiners and Clear chat ----
+      const shared = await prisma.message.findFirst({ where: { conversationId: group, clientMessageId: 'household-message' } });
+      const names = async () => (await info('owner', group, shared.id)).body.receipts.map(r => [r.user.id, r.delivered, r.read]);
+      // outsider joined after this message was sent, so is not kept on its waiting list.
+      assert.deepEqual(await names(), [['alice', false, false], ['bob', false, false]]);
+      await chat.markConversationRead(group, 'outsider', shared.sequence);
+      // Having opened the history, they now count as a reader.
+      assert.deepEqual(await names(), [['outsider', true, true], ['alice', false, false], ['bob', false, false]]);
+      // The household chat names each reader with their own time, exactly like a private chat.
+      const reader = (await info('owner', group, shared.id)).body.receipts[0];
+      assert.ok(reader.readAt && reader.deliveredAt && !Number.isNaN(Date.parse(reader.readAt)));
+      await pause(30);
+      await chat.markConversationRead(group, 'bob', shared.sequence);
+      const times = Object.fromEntries((await info('owner', group, shared.id)).body.receipts.map(r => [r.user.id, r.readAt]));
+      assert.ok(new Date(times.bob) > new Date(times.outsider)); // two people, two different times
+      assert.equal(times.alice, null); // she has not read it yet
+      const ownerSocket = await socket('owner');
+      const ownerHeard = once(ownerSocket, 'chat:receipt');
+      assert.equal((await request('alice', 'POST', `/conversations/${group}/clear`)).body.receipt, undefined);
+      assert.equal((await ownerHeard)[0].userId, 'alice');
+      // Clear chat sweeps messages away without opening them: read, but with no time to claim.
+      const cleared = (await info('owner', group, shared.id)).body.receipts.find(r => r.user.id === 'alice');
+      assert.deepEqual([cleared.delivered, cleared.read, cleared.deliveredAt, cleared.readAt], [true, true, null, null]);
+      const summary = (await chat.getConversation(group, 'owner')).receipts;
+      assert.deepEqual(summary.map(r => r.userId).sort(), ['alice', 'bob', 'outsider']);
+      assert.ok(summary.every(r => r.deliveredSequence >= r.readSequence && typeof r.joinedAt.getTime === 'function'));
     });
     await t.test('removing a member blocks history, sends, and pending live/push delivery', async () => {
       await devices.registerDevice('bob', 'ExpoPushToken[removed-member]', 'android');

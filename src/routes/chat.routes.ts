@@ -13,10 +13,14 @@ conversationRoutes.use(authenticate);
 conversationRoutes.get("/:conversationId", chat.detail);
 conversationRoutes.get("/:conversationId/messages", chat.messages);
 conversationRoutes.post("/:conversationId/messages/reconcile", chat.reconcileMessages);
+conversationRoutes.post("/:conversationId/uploads", chat.authorizeUpload);
 conversationRoutes.post("/:conversationId/messages", chat.send);
 conversationRoutes.post("/:conversationId/messages/delete", chat.removeMessages);
+conversationRoutes.patch("/:conversationId/messages/:messageId", chat.edit);
+conversationRoutes.get("/:conversationId/messages/:messageId/receipts", chat.receipts);
 conversationRoutes.post("/:conversationId/clear", chat.clear);
 conversationRoutes.patch("/:conversationId/read", chat.read);
+conversationRoutes.patch("/:conversationId/delivered", chat.delivered);
 conversationRoutes.patch("/:conversationId/preferences", chat.mute);
 
 export const deviceRoutes = Router();

@@ -31,7 +31,7 @@ function setup(actor = 'OWNER', target = 'MEMBER', existing = true) {
       }),
       findMany: mock.fn(async ({ where, select }) => {
         assert.deepEqual(where, { householdId: 'home' });
-        assert.deepEqual(select, { id: true, role: true, user: { select: { id: true, name: true, email: true } } });
+        assert.deepEqual(select, { id: true, role: true, user: { select: { id: true, name: true, email: true, avatarUrl: true } } });
         return [member];
       }),
       create: mock.fn(async () => member),

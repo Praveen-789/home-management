@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 process.env.JWT_SECRET = 'chat-unit-tests';
 process.env.DATABASE_URL ??= 'postgresql://test:test@localhost:5432/test';
-const { directKey } = await import('../src/services/chat.service.ts');
+const { directKey, messagePreview } = await import('../src/services/chat.service.ts');
 const { validateExpoToken } = await import('../src/services/device-token.service.ts');
 const { sendExpoPush, getExpoReceipt, pushPreview } = await import('../src/lib/expo-push.ts');
 const originalFetch = globalThis.fetch;
@@ -34,6 +34,11 @@ test('Expo adapter sends the sender and message preview', async () => {
     return new Response(JSON.stringify({ data: [{ status: 'ok', id: 'ticket' }] }));
   };
   assert.equal(await sendExpoPush('ExpoPushToken[abc]', { conversationId: 'conv', messageId: 'msg', sequence: 7, recipientId: 'user-1' }, 'Praveen', 'Dinner is ready'), 'ticket');
+});
+test('alerts show a camera for photos, with the caption when there is one', () => {
+  assert.equal(messagePreview({ text: 'Dinner is ready', images: [] }), 'Dinner is ready');
+  assert.equal(messagePreview({ text: '', images: [{}] }), '📷 Photo');
+  assert.equal(messagePreview({ text: 'Leak under the sink', images: [{}] }), '📷 Leak under the sink');
 });
 test('push previews normalize whitespace and truncate by Unicode characters', () => {
   assert.equal(pushPreview('  Dinner\n   is ready  '), 'Dinner is ready');

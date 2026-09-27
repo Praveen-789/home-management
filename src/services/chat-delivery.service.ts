@@ -4,7 +4,7 @@ import prisma from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
 import { emitChatEvent } from "../lib/chat-events.js";
 import { getExpoReceipt, PushError, sendExpoPush } from "../lib/expo-push.js";
-import { conversationSummary, messageSelect, requireConversation } from "./chat.service.js";
+import { conversationSummary, messagePreview, messageSelect, requireConversation, toMessageView } from "./chat.service.js";
 
 const MAX_ATTEMPTS = 8;
 const PUSH_MAX_AGE = 60 * 60_000;
@@ -63,7 +63,7 @@ export async function processDelivery(job: ChatDelivery) {
         // the member cannot commit between the authorization check and emit.
         // A crash can replay this event; clients deduplicate by message.id.
         emitChatEvent(job.userId, "chat:message", {
-          message, unreadCount: summary.unreadCount, lastReadSequence: summary.lastReadSequence,
+          message: toMessageView(message), unreadCount: summary.unreadCount, lastReadSequence: summary.lastReadSequence,
           muted: summary.muted, alert: message.senderId !== job.userId && !summary.muted && summary.lastReadSequence < message.sequence,
         });
         return null;
@@ -76,7 +76,7 @@ export async function processDelivery(job: ChatDelivery) {
         token: device.token, platform: device.platform,
         chat: { conversationId: message.conversationId, messageId: message.id, sequence: message.sequence, recipientId: job.userId },
         senderName: message.sender.name,
-        messageText: message.text,
+        messageText: messagePreview(message),
       } : null;
     });
     if (!target) { await updateJob(job, { completedAt: new Date(), lastError: null }); return; }

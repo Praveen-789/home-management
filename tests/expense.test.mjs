@@ -10,7 +10,7 @@ const { Prisma } = await import('../generated/prisma/client.ts');
 const originalTransaction = prisma.$transaction;
 let server, base, db;
 const token = signToken({ userId: 'actor', email: 'actor@example.com' });
-const userSelect = { select: { id: true, name: true, email: true } };
+const userSelect = { select: { id: true, name: true, email: true, avatarUrl: true } };
 const imageSelect = { id: true, publicId: true, width: true, height: true, bytes: true, format: true, createdAt: true, uploadedBy: userSelect };
 const expenseSelect = { id: true, householdId: true, amount: true, description: true, category: true, createdAt: true, updatedAt: true, paidBy: userSelect, createdBy: userSelect, task: { select: { id: true, title: true, status: true } }, images: { select: imageSelect, orderBy: { createdAt: 'asc' } } };
 const expenseOrder = [{ createdAt: 'desc' }, { id: 'asc' }];
