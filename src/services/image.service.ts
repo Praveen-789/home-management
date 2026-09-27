@@ -37,7 +37,7 @@ export const withImages = <Row extends { images: ImageRow[] }>({ images, ...row 
 });
 
 // Which parent an image hangs off. Exactly one, which the database also enforces.
-export type ImageParent = { taskId: string } | { expenseId: string };
+export type ImageParent = { taskId: string } | { expenseId: string } | { postId: string };
 
 const uploadMessages: TransactionMessages = {
   conflict: "Upload request conflicts with another",

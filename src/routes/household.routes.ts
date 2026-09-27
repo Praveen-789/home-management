@@ -5,6 +5,7 @@ import { list, remove, updateRole } from "../controllers/household-member.contro
 import { cancel as cancelInvitation, invite, listForHousehold as listInvitations } from "../controllers/household-invitation.controller.js";
 import taskRoutes from "./task.routes.js";
 import expenseRoutes from "./expense.routes.js";
+import postRoutes from "./post.routes.js";
 import { authorizeUpload } from "../controllers/image.controller.js";
 
 const router = Router();
@@ -26,6 +27,7 @@ router.put("/:householdId/picture", authenticate, updatePicture);
 router.delete("/:householdId/picture", authenticate, deletePicture);
 router.use("/:householdId/tasks", taskRoutes);
 router.use("/:householdId/expenses", expenseRoutes);
+router.use("/:householdId/posts", postRoutes);
 
 export default router;
 

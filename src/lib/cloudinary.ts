@@ -31,6 +31,9 @@ export const pictureFolder = (householdId: string) => `${imageFolder(householdId
 // Chat photos sit below the household too, one folder per conversation, so a photo uploaded for one
 // chat cannot be sent in another or attached to a task.
 export const chatFolder = (householdId: string, conversationId: string) => `${imageFolder(householdId)}/chat/${conversationId}`;
+// Post photos get their own folder below the household, so one can never be attached to a task or
+// sent in a chat, and a task photo can never be posted.
+export const postFolder = (householdId: string) => `${imageFolder(householdId)}/posts`;
 
 // Whether a public ID is one this server would have signed for the folder: the folder itself,
 // then a UUID, and nothing deeper.
@@ -68,7 +71,7 @@ export type UploadTicket = {
   expiresAt: string;
 };
 
-// The folder decides who the upload belongs to: imageFolder, avatarFolder, pictureFolder or chatFolder.
+// The folder decides who the upload belongs to: imageFolder, avatarFolder, pictureFolder, chatFolder or postFolder.
 export function createUploadTicket(folder: string, now = new Date()): UploadTicket {
   const { cloudName, apiKey, apiSecret } = credentials();
   const timestamp = Math.floor(now.getTime() / 1000);

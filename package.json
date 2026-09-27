@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --import tsx --test tests/*.test.mjs",
     "test:chat:integration": "node --import tsx --test tests/chat.integration.mjs",
+    "test:posts:integration": "node --import tsx --test tests/post.integration.mjs",
     "typecheck": "tsc --noEmit",
     "dev": "nodemon --watch src --watch generated --ext ts,json --exec tsx src/server.ts",
     "start": "npx tsx src/server.ts"

@@ -617,7 +617,7 @@ Expense HTTP tests in `tests/expense.test.mjs` cover authentication, household a
 
 ## Images
 
-Tasks and expenses can carry up to 5 photos each. Files live in Cloudinary; Postgres stores only the Cloudinary public ID and what Cloudinary reported about the file. The app uploads straight to Cloudinary with a signature the server issues, so image bytes never pass through this API and the Cloudinary secret never leaves the server.
+Tasks and expenses can carry up to 5 photos each; [posts](#posts) can too, and chat messages one. Files live in Cloudinary; Postgres stores only the Cloudinary public ID and what Cloudinary reported about the file. The app uploads straight to Cloudinary with a signature the server issues, so image bytes never pass through this API and the Cloudinary secret never leaves the server.
 
 | Method | Path | Body | Success |
 | --- | --- | --- | --- |
@@ -697,7 +697,7 @@ Removing an image, deleting a task, or deleting an expense removes the rows insi
 
 ### Configuration
 
-Set `CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>` in `.env` (and on the host when deploying). No upload preset is needed; the server signs the format and size policy itself. This module requires the `add_image` migration, which also adds a check constraint so an image belongs to exactly one task or one expense:
+Set `CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>` in `.env` (and on the host when deploying). No upload preset is needed; the server signs the format and size policy itself. This module requires the `add_image` migration, which also adds a check constraint so an image belongs to exactly one parent. Later migrations extend that constraint to chat messages and posts:
 
 ```sh
 npx prisma migrate deploy
@@ -705,6 +705,119 @@ npx prisma generate
 ```
 
 Image HTTP tests in `tests/image.test.mjs` cover the ticket's fields and signature, folder checks, duplicate and limit rules, every role and ownership combination for tasks and expenses, body validation, and the Cloudinary cleanup after removals and parent deletes, with the Cloudinary SDK mocked.
+
+## Posts
+
+A household's shared feed. Any member can post text, up to 5 photos, or both; everyone in the household sees the post and can like it and comment on it. All endpoints require a Bearer token and the requester must belong to the household.
+
+| Method | Path | Body | Success |
+| --- | --- | --- | --- |
+| POST | `/api/households/:householdId/posts/uploads` | None | 201 `{ message, upload }` |
+| GET | `/api/households/:householdId/posts` | None; optional query `cursor`, `limit` | 200 `{ message, posts, nextCursor }` |
+| POST | `/api/households/:householdId/posts` | `{ "text": "Pizza night on Friday!", "images": [{ "publicId", "width", "height", "bytes", "format" }] }` | 201 `{ message, post }` |
+| GET | `/api/households/:householdId/posts/:postId` | None | 200 `{ message, post }` |
+| DELETE | `/api/households/:householdId/posts/:postId` | None | 200 `{ message }` |
+| PUT | `/api/households/:householdId/posts/:postId/like` | None | 200 `{ message, post }` |
+| DELETE | `/api/households/:householdId/posts/:postId/like` | None | 200 `{ message, post }` |
+| GET | `/api/households/:householdId/posts/:postId/comments` | None; optional query `cursor`, `limit` | 200 `{ message, comments, nextCursor }` |
+| POST | `/api/households/:householdId/posts/:postId/comments` | `{ "text": "Count me in" }` | 201 `{ message, comment }` |
+| DELETE | `/api/households/:householdId/posts/:postId/comments/:commentId` | None | 200 `{ message }` |
+
+### Creating a post
+
+1. For each photo, `POST /posts/uploads` for a ticket and upload the file to Cloudinary exactly as in the [image upload flow](#upload-flow). Post tickets sign into the household's own posts folder, `homehub/households/<householdId>/posts`.
+2. `POST /posts` with `text` and `images`, each image as Cloudinary described it. Photos keep the order they are listed in.
+
+| Field | Rules |
+| --- | --- |
+| `text` | Optional when there are photos; absent or `null` means none. Trimmed, at most 4000 characters. |
+| `images` | Optional list of at most 5 photos. Every public ID must come from a post ticket for this household. A task photo, a chat photo, or another household's photo is refused. |
+
+A post must carry text, a photo, or both. Posts cannot be edited. The author comes from the token and the household from the URL; `authorId` or `householdId` in a body is ignored.
+
+### Response shape
+
+`likeCount` and `commentCount` are totals; `likedByMe` says whether the requester liked the post. `text` is `""` for a photo-only post. Images have the same shape as task and expense [images](#image-shape).
+
+```json
+{
+  "message": "Post fetched successfully",
+  "post": {
+    "id": "post-id",
+    "householdId": "household-id",
+    "text": "Pizza night on Friday!",
+    "createdAt": "2026-09-27T12:00:00.000Z",
+    "author": { "id": "user-id", "name": "Praveen", "email": "praveen@example.com", "avatarUrl": null },
+    "images": [],
+    "likeCount": 2,
+    "commentCount": 1,
+    "likedByMe": true
+  }
+}
+```
+
+A comment:
+
+```json
+{
+  "id": "comment-id",
+  "postId": "post-id",
+  "text": "Count me in",
+  "createdAt": "2026-09-27T12:05:00.000Z",
+  "author": { "id": "user-id", "name": "Asha", "email": "asha@example.com", "avatarUrl": null }
+}
+```
+
+### Paging
+
+The feed is newest first and comments are oldest first. Both return at most `limit` rows (1 to 50, default 20) and a `nextCursor`. Pass it back as `cursor` for the next page; it is `null` on the last page. The cursor marks where the last page ended rather than a page number, so posts created while someone scrolls never make a post repeat or disappear between pages. Treat it as an opaque string. Anything the server did not issue returns `400` `Cursor is invalid`.
+
+```
+GET /api/households/:householdId/posts?limit=20
+GET /api/households/:householdId/posts?limit=20&cursor=<nextCursor from the previous page>
+```
+
+### Likes
+
+`PUT /like` likes the post and `DELETE /like` removes the like. Each person likes a post at most once. Both requests can be repeated safely: liking again or unliking a post you never liked changes nothing and still returns `200` with the post and its current `likeCount`.
+
+### Permissions
+
+| Action | OWNER / ADMIN | MEMBER |
+| --- | --- | --- |
+| Read the feed, a post, and comments | Yes | Yes |
+| Post, like, and comment | Yes | Yes |
+| Delete a post | Any post | Their own |
+| Delete a comment | Any comment | Their own |
+
+Refusals are `403` `You can only delete your own posts` and `403` `You can only delete your own comments`. A post stays after its author leaves the household; only owners and admins can remove it then.
+
+### Deletion
+
+Deleting a post deletes its likes, comments, photo rows and [notifications](#post-notifications) in one transaction, then asks Cloudinary to destroy the photo files. As with task and expense images, that call is best-effort.
+
+### Errors
+
+`400` for invalid input: `Post must contain text or a photo`, `Post text must be at most 4000 characters`, `Images must be a list of at most 5 photos`, `The same photo was added twice`, `Photo was not uploaded for this household's posts`, `Comment text is required`, `Comment text must be at most 1000 characters`, `Cursor is invalid`, or a bad `limit`. Also `401` for missing or invalid authentication, `403` for the refusals above, `404` `Household not found or access denied`, `404` `Post not found`, `404` `Comment not found`, `409` `This photo was already posted`, `409` `Posts changed concurrently; please retry` after three serialization retries, and `500` `Post operation failed` for unexpected failures.
+
+This module requires the `add_posts` migration. The migration also adds check constraints: post text is empty or 1 to 4000 characters, comment text is 1 to 1000 characters, and an image belongs to exactly one task, expense, message or post.
+
+```sh
+npx prisma migrate deploy
+npx prisma generate
+```
+
+`tests/post.integration.mjs` runs against a real PostgreSQL database in a throwaway schema, with Cloudinary faked, via `npm run test:posts:integration`. It covers:
+- authentication and membership;
+- upload tickets;
+- every validation rule, and folder checks against task, chat and other households' photos;
+- photo order, and duplicate photos;
+- the database constraints;
+- feed and comment paging, including posts made mid-scroll and posts from the same millisecond;
+- likes and their repeats;
+- who gets notified;
+- every delete permission, and the cascade and Cloudinary cleanup;
+- posts whose author has left.
 
 ## Profile pictures
 
@@ -890,6 +1003,15 @@ These are stored in-app notifications. Expo push delivery is not yet connected. 
 ### Invitation notifications
 
 Inviting, accepting and declining each notify one person; see **Household invitations** for the table. `entityId` on a `HOUSEHOLD_INVITATION` notification is the invitation ID.
+
+### Post notifications
+
+| Type | Trigger | Recipient | Message |
+| --- | --- | --- | --- |
+| `POST_CREATED` | Create a post | All current household members except the author | `Asha: Pizza night on Friday!`, or `Asha: 📷 3 photos` for a post without text. Text longer than 100 characters is cut with `…`. |
+| `POST_COMMENTED` | Comment on a post | The post's author, unless they wrote the comment or have left the household | `Asha commented on your post` |
+
+`entityId` is the post ID. Likes send no notification. Deleting a post deletes both kinds of notification for it, so the quoted text of a post an admin removed does not stay in anyone's inbox. Comment notifications do not quote the comment, so a deleted comment leaves nothing behind either.
 
 
 ## Google sign-in and account linking

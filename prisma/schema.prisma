@@ -71,6 +71,9 @@ model User {
   deviceTokens        DeviceToken[]
   chatDeliveries      ChatDelivery[]
   chatReceipts        ChatReceipt[]
+  posts               Post[]
+  postLikes           PostLike[]
+  postComments        PostComment[]
 }
 
 model Household {
@@ -90,6 +93,7 @@ model Household {
   notifications Notification[]
   invitations   HouseholdInvitation[]
   conversations Conversation[]
+  posts         Post[]
 
   @@unique([createdById, name])
 }
@@ -176,7 +180,7 @@ model Expense {
   @@index([paidById])
 }
 
-// A photo stored in Cloudinary and attached to exactly one task, expense or chat message; the
+// A photo stored in Cloudinary and attached to exactly one task, expense, chat message or post; the
 // migration adds a check constraint for that. Only the Cloudinary public ID is stored; URLs are
 // derived from it. Deleting the parent deletes the row, and the service then removes the file
 // from Cloudinary.
@@ -186,6 +190,7 @@ model Image {
   taskId       String?
   expenseId    String?
   messageId    String?
+  postId       String?
   publicId     String   @unique
   width        Int
   height       Int
@@ -198,11 +203,64 @@ model Image {
   task       Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
   expense    Expense?  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
   message    Message?  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  post       Post?     @relation(fields: [postId], references: [id], onDelete: Cascade)
   uploadedBy User      @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
 
   @@index([taskId])
   @@index([expenseId])
   @@index([messageId])
+  @@index([postId])
+}
+
+// Something a member shares with the whole household: text, up to five photos, or both. `text` is
+// empty for a photo-only post; the service makes sure every post carries text, a photo, or both.
+// Posts cannot be edited, so there is no updatedAt. Deleting a post deletes its likes, comments and
+// photos.
+model Post {
+  id          String   @id @default(uuid())
+  householdId String
+  authorId    String
+  text        String
+  createdAt   DateTime @default(now())
+
+  household Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  author    User          @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  images    Image[]
+  likes     PostLike[]
+  comments  PostComment[]
+
+  // The feed walks this index newest first, the ID breaking ties between posts made in the same millisecond.
+  @@index([householdId, createdAt, id])
+  @@index([authorId])
+}
+
+// One like per person per post, so liking twice changes nothing.
+model PostLike {
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userId])
+  @@index([userId])
+}
+
+// A plain-text comment on a post. Comments are a flat list, with no replies and no editing.
+model PostComment {
+  id        String   @id @default(uuid())
+  postId    String
+  authorId  String
+  text      String
+  createdAt DateTime @default(now())
+
+  post   Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id], onDelete: Restrict)
+
+  // Comments are read oldest first, the ID breaking ties.
+  @@index([postId, createdAt, id])
+  @@index([authorId])
 }
 
 // A one-time code for resetting a forgotten password. Only the SHA-256 hash is stored; the code

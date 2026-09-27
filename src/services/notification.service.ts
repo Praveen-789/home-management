@@ -6,7 +6,7 @@ import { AppError } from "../lib/errors.js";
 export const NOTIFICATION_TYPES = [
   "TASK_ASSIGNED", "TASK_COMPLETED", "EXPENSE_ADDED", "EXPENSE_UPDATED",
   "HOUSEHOLD_INVITATION", "INVITATION_DECLINED", "MEMBER_JOINED", "MEMBER_REMOVED",
-  "CHAT_MESSAGE",
+  "CHAT_MESSAGE", "POST_CREATED", "POST_COMMENTED",
 ] as const;
 export type NotificationType = typeof NOTIFICATION_TYPES[number];
 
@@ -15,8 +15,8 @@ export type CreateNotificationInput = {
   type: NotificationType;
   title: string;
   message: string;
-  // Where tapping the notification should lead. entityId is the task or
-  // expense ID implied by the type; omit it for household-level events.
+  // Where tapping the notification should lead. entityId is the task, expense
+  // or post ID implied by the type; omit it for household-level events.
   householdId?: string;
   entityId?: string;
 };
