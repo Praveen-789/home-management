@@ -42,6 +42,7 @@ enum ExpenseCategory {
 }
 
 model User {
+  lastSeenAt DateTime?
   id        String   @id @default(uuid())
   name      String
   email     String   @unique

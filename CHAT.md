@@ -203,7 +203,7 @@ Connect `socket.io-client` to the **server origin**, not `/api`, with:
 const socket = io(SERVER_ORIGIN, { auth: { token: jwt } });
 ```
 
-The backend joins only an authenticated user room. There are no client-controlled join/subscribe events and no socket-based send endpoint. REST remains the single message write path. All devices of an authorized user receive live updates, including the sender's other devices.
+The backend joins only an authenticated user room. There are no client-controlled join/subscribe events and no socket-based send endpoint; the one event a client sends is the typing report described below. REST remains the single message write path. All devices of an authorized user receive live updates, including the sender's other devices.
 
 | Event | Payload | Client action |
 | --- | --- | --- |
@@ -214,7 +214,14 @@ The backend joins only an authenticated user room. There are no client-controlle
 | `chat:read` | `{ conversationId, lastReadSequence, unreadCount }` | Synchronize read progress across own devices |
 | `chat:receipt` | `{ conversationId, userId, deliveredSequence, readSequence }` | Sent to everyone except `userId`. Move that person's positions forward and re-tick own messages |
 | `chat:preferences` | `{ conversationId, muted }` | Synchronize own mute preference |
+| `chat:typing` | `{ conversationId, userId, name }` | Sent to everyone in the conversation except `userId`. Show "`name` is typing…" for about 5 seconds, renewed by each event; hide it sooner when a `chat:message` from `userId` arrives there |
 | `connect_error` | Error with generic auth message | Refresh/reacquire authentication before reconnecting |
+
+### Typing
+
+The only event a client sends is `chat:typing` with `{ conversationId }`, while its user types a new message. It should send at most one every 3 seconds per conversation, and use `socket.volatile.emit` so that a report made while offline is dropped instead of queued for the reconnect. There is no "stopped typing" event: the mark fades when reports stop, or ends when the message arrives.
+
+On every report the server checks that the sender can see the conversation, then relays it to the household, or to the other person in a private chat. The sender's own devices are not told. A report from someone outside the conversation, or a malformed one, is ignored without an error, and one arriving less than a second after the same socket's previous report is dropped before it costs a database read. Nothing is stored and nothing goes through the outbox, so a report lost to a dropped connection is never shown. Typing carries no words, so the relay happens after the access check commits, without the membership lock that message delivery holds.
 
 Only show a banner when `alert` is true and that conversation is not currently being viewed. Socket connection does not mean a message has been read. Read/preference events are best effort; refresh summaries on reconnect or app resume. Fetch missing messages after every reconnect, even if the socket reconnects automatically. If a token expires, the server disconnects the socket; the app must supply a fresh JWT and reconnect explicitly.
 
@@ -256,3 +263,15 @@ References: [Socket.IO authentication](https://socket.io/docs/v4/middlewares/), 
 ## Android action notification delivery
 
 Android pushes now send high-priority data-only messages with delivery=chat_local_v1, previewTitle, previewBody and the existing chat identifiers. The updated app creates the visible notification with its registered Reply and Mark as read category. iOS keeps its alert payload. Install the updated app (including native expo-task-manager) before deploying this backend change; old Android clients cannot render this payload. Background execution is subject to Android restrictions. Reading a chat clears matching local alerts and saves the read position to suppress delayed deliveries.
+
+## Online and last seen
+
+Conversation participants include `isOnline` and nullable `lastSeenAt` (UTC ISO timestamp). Presence is global to a user and visible only to current members of shared households. It does not indicate that a conversation or message was read.
+
+The server sends `chat:presence` with `{ userId, isOnline, lastSeenAt, updatedAt }` to authorised user rooms. Online events carry `lastSeenAt: null`; offline events carry the time the final active session became inactive. Apply events by `updatedAt` and refresh conversation summaries on reconnect/resume, since these events are best effort.
+
+An authenticated connection starts active. Mobile clients send `chat:activity` with `{ active: false }` on background and `{ active: true }` on foreground. Alternatively disconnect on background and reconnect on foreground. Multiple devices are counted independently; the user stays online while any device is active. A five-second grace period absorbs brief reconnects. Broken networks are detected by Socket.IO heartbeat before the grace period begins.
+
+Last-seen timestamps are checkpointed every minute and on transitions. After a server crash they are approximate; existing users have null until first activity. Presence requires one server process/replica. Add shared presence tracking and a shared Socket.IO adapter before scaling.
+
+Deploy the additive migration with `npm run migrate:deploy` before starting the updated backend.

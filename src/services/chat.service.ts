@@ -3,6 +3,7 @@ import { AppError } from "../lib/errors.js";
 import { chatTransaction } from "../lib/chat-transaction.js";
 import { chatFolder, createUploadTicket, imageStorage, isImageIn } from "../lib/cloudinary.js";
 import { chatUserSummary } from "../lib/user-select.js";
+import { presence } from "./presence.service.js";
 import { toImageView, type ImageInput } from "./image.service.js";
 
 // A chat photo. Its sender uploaded it, so no separate uploader is listed.
@@ -98,7 +99,7 @@ function conversationMembers(tx: Prisma.TransactionClient, conversation: Accessi
   return tx.householdMember.findMany({
     where: { householdId: conversation.householdId, ...(conversation.type === "DIRECT" ? {
       userId: { in: conversation.participants.map(p => p.userId) },
-    } : {}) }, select: { userId: true, joinedAt: true, user: chatUserSummary },
+    } : {}) }, select: { userId: true, joinedAt: true, user: { select: { ...chatUserSummary.select, lastSeenAt: true } } },
   });
 }
 
@@ -118,7 +119,8 @@ export async function conversationSummary(tx: Prisma.TransactionClient, conversa
   return {
     id: conversation.id, householdId: conversation.householdId, type: conversation.type,
     createdAt: conversation.createdAt, updatedAt: conversation.updatedAt,
-    participants: members.map(m => m.user),
+    participants: members.map(m => ({ ...m.user, isOnline: presence.isOnline(m.userId),
+      lastSeenAt: presence.lastSeen(m.userId) ?? m.user.lastSeenAt })),
     // How far everyone else has received and read. Two numbers per person are enough to tick
     // every message in the chat, so no per-message data travels with the list.
     receipts: members.filter(m => m.userId !== userId).map(m => {
@@ -136,6 +138,20 @@ export async function conversationSummary(tx: Prisma.TransactionClient, conversa
 
 export function getConversation(conversationId: string, userId: string) {
   return chatTransaction(tx => conversationSummary(tx, conversationId, userId));
+}
+
+// Who is told that `userId` is typing: everyone else who can see the conversation now. Typing
+// carries no words and nothing is stored, so there is no outbox; a report lost to a dropped
+// connection is simply never shown.
+export function typingAudience(conversationId: string, userId: string) {
+  return chatTransaction(async tx => {
+    const conversation = await requireConversation(tx, conversationId, userId);
+    const members = await conversationMembers(tx, conversation);
+    return {
+      name: members.find(m => m.userId === userId)?.user?.name ?? "",
+      recipients: members.filter(m => m.userId !== userId).map(m => m.userId),
+    };
+  });
 }
 
 export function listConversations(householdId: string, userId: string, page: number, limit: number) {

@@ -1,4 +1,5 @@
 import app from "./app.js";
+import { drainPresence } from "./services/presence.service.js";
 import { createServer } from "node:http";
 import prisma from "./lib/prisma.js";
 import { attachRealtime } from "./lib/realtime.js";
@@ -22,6 +23,7 @@ async function shutdown() {
   deadline.unref();
   await stopWorker?.();
   await new Promise<void>(resolve => io.close(() => resolve()));
+  await drainPresence();
   await prisma.$disconnect();
   clearTimeout(deadline);
 }

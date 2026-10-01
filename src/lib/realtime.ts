@@ -3,10 +3,17 @@ import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
 import { verifyToken } from "./jwt.js";
 import prisma from "./prisma.js";
-import { chatEvents } from "./chat-events.js";
+import { chatEvents, emitChatEvent } from "./chat-events.js";
 import { webOrigins } from "./web-origins.js";
+import { typingAudience } from "../services/chat.service.js";
+import { presence, startPresenceCheckpoint } from "../services/presence.service.js";
+
+// The phone reports typing at most every 3 seconds. Anything faster is dropped before it costs a
+// database read.
+const TYPING_MIN_GAP_MS = 1000;
 
 export function attachRealtime(server: HttpServer) {
+  const stopPresence = startPresenceCheckpoint();
   const io = new Server(server, {
     cors: { origin: webOrigins }, maxHttpBufferSize: 16_384,
     // No connection recovery: restored subscriptions could outlive permissions.
@@ -30,11 +37,33 @@ export function attachRealtime(server: HttpServer) {
     // Only identity rooms; clients cannot subscribe to arbitrary conversations.
     // Membership and private-chat access are checked when delivering each job.
     void socket.join(`user:${socket.data["userId"]}`);
+    const userId = socket.data["userId"] as string;
+    presence.connect(userId, socket.id);
     const timer = setInterval(() => {
       if (expiresAt <= Date.now()) socket.disconnect(true);
     }, 1000);
     timer.unref();
-    socket.on("disconnect", () => clearInterval(timer));
+    socket.on("disconnect", () => { clearInterval(timer); presence.disconnect(userId, socket.id); });
+    // Mobile clients report background/foreground without losing live delivery.
+    socket.on("chat:activity", (payload: unknown) => {
+      if (expiresAt <= Date.now() || !payload || typeof payload !== "object") return;
+      const active = (payload as { active?: unknown }).active;
+      if (active === true) presence.connect(userId, socket.id);
+      else if (active === false) presence.disconnect(userId, socket.id);
+    });
+    // Typing reports are also accepted from a phone. Access is checked on every report, since the
+    // client is not trusted to name only conversations it belongs to; a refusal or bad payload is ignored.
+    let lastTyping = 0;
+    socket.on("chat:typing", (payload: unknown) => {
+      const conversationId = payload && typeof payload === "object" ? (payload as { conversationId?: unknown }).conversationId : undefined;
+      if (typeof conversationId !== "string" || conversationId.length > 64) return;
+      if (Date.now() - lastTyping < TYPING_MIN_GAP_MS || expiresAt <= Date.now()) return;
+      lastTyping = Date.now();
+      const userId = socket.data["userId"] as string;
+      typingAudience(conversationId, userId).then(({ name, recipients }) => {
+        for (const id of recipients) emitChatEvent(id, "chat:typing", { conversationId, userId, name });
+      }, () => {});
+    });
   });
   const deliver = (userId: string, event: string, payload: unknown) => {
     const room = io.sockets.adapter.rooms.get(`user:${userId}`);
@@ -47,6 +76,7 @@ export function attachRealtime(server: HttpServer) {
     }
   };
   chatEvents.on("delivery", deliver);
+  server.once("close", () => { void stopPresence(); });
   server.once("close", () => chatEvents.off("delivery", deliver));
   return io;
 }

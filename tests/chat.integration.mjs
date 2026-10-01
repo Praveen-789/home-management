@@ -82,6 +82,40 @@ test('chat REST, privacy, ordering, sockets, outbox and Expo receipts on Postgre
       assert.equal((await request('owner', 'PATCH', `/conversations/${direct}/preferences`, { muted: true })).status, 404);
       assert.equal((await request('owner', 'GET', '/households/home/conversations')).body.conversations.length, 1);
     });
+    await t.test('presence supports multiple devices, background activity and household privacy', async () => {
+      const { setTimeout: delay } = await import('node:timers/promises');
+      const { drainPresence } = await import('../src/services/presence.service.ts');
+      const bobPhone = await socket('bob');
+      const outsiderPhone = await socket('outsider');
+      const received = [], leaked = [];
+      bobPhone.on('chat:presence', event => { if (event.userId === 'alice') received.push(event); });
+      outsiderPhone.on('chat:presence', event => { if (event.userId === 'alice') leaked.push(event); });
+      const alicePhone = await socket('alice');
+      const aliceWeb = await socket('alice');
+      await drainPresence();
+      await delay(100);
+      assert.equal(received.filter(e => e.isOnline).length, 1);
+      alicePhone.emit('chat:activity', { active: false });
+      await delay(100);
+      assert.equal((await chat.getConversation(direct, 'bob')).participants.find(p => p.id === 'alice').isOnline, true);
+      aliceWeb.disconnect();
+      await delay(5300);
+      await drainPresence();
+      await delay(100);
+      const peer = (await chat.getConversation(direct, 'bob')).participants.find(p => p.id === 'alice');
+      assert.equal(peer.isOnline, false);
+      assert.ok(peer.lastSeenAt);
+      assert.ok((await prisma.user.findUnique({ where: { id: 'alice' } })).lastSeenAt);
+      assert.equal(received.filter(e => !e.isOnline).length, 1);
+      alicePhone.emit('chat:activity', { active: true });
+      await delay(100);
+      await drainPresence();
+      assert.equal((await chat.getConversation(direct, 'bob')).participants.find(p => p.id === 'alice').isOnline, true);
+      assert.deepEqual(leaked, []);
+      alicePhone.disconnect(); bobPhone.disconnect(); outsiderPhone.disconnect();
+      await delay(5300);
+      await drainPresence();
+    });
     await t.test('idempotent concurrent send, spoof protection and ordered recovery', async () => {
       const payload = { clientMessageId: 'first-message', text: 'Hello Bob', senderId: 'owner' };
       const [a, b] = await Promise.all([
@@ -142,6 +176,43 @@ test('chat REST, privacy, ordering, sockets, outbox and Expo receipts on Postgre
       assert.equal(ownerSocketEvents.length, 0);
       const expiring = await socket('alice', jwt.sign({ userId: 'alice', email: 'alice@chat.test' }, process.env.JWT_SECRET, { expiresIn: 2 }));
       await once(expiring, 'disconnect');
+    });
+    await t.test('typing reaches the others in the chat, nobody outside it, and not too often', async () => {
+      const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const heard = { alice: [], bob: [], owner: [], outsider: [] };
+      const phones = { alice: await socket('alice'), bob: await socket('bob'), owner: await socket('owner'), outsider: await socket('outsider') };
+      for (const [user, phone] of Object.entries(phones)) phone.on('chat:typing', event => heard[user].push(event));
+      const counts = () => Object.values(heard).map(events => events.length);
+      const forget = () => Object.values(heard).forEach(events => { events.length = 0; });
+
+      // ---- a private chat: the other person hears it; the typist's devices and the household do not ----
+      const bobHears = once(phones.bob, 'chat:typing');
+      phones.alice.emit('chat:typing', { conversationId: direct });
+      assert.deepEqual((await bobHears)[0], { conversationId: direct, userId: 'alice', name: 'alice' });
+      // A second report within a second is dropped before it reaches the database.
+      phones.alice.emit('chat:typing', { conversationId: direct });
+      await pause(200);
+      assert.deepEqual(counts(), [0, 1, 0, 0]);
+
+      // ---- the household chat: every other member hears it ----
+      forget();
+      const ownerHears = once(phones.owner, 'chat:typing');
+      phones.bob.emit('chat:typing', { conversationId: group });
+      assert.equal((await ownerHears)[0].userId, 'bob');
+      await pause(200);
+      assert.deepEqual(counts(), [1, 0, 1, 0]);
+
+      // ---- someone outside the chat, or a malformed report, is ignored and the socket stays up ----
+      forget();
+      await pause(1000);
+      phones.owner.emit('chat:typing', { conversationId: direct });
+      phones.outsider.emit('chat:typing', { conversationId: group });
+      phones.alice.emit('chat:typing', 'not a report');
+      phones.bob.emit('chat:typing', { conversationId: 42 });
+      await pause(300);
+      assert.deepEqual(counts(), [0, 0, 0, 0]);
+      assert.ok(Object.values(phones).every(phone => phone.connected));
+      Object.values(phones).forEach(phone => phone.disconnect());
     });
     await t.test('push remains disabled, claims are exclusive, receipts and invalid-token cleanup', async () => {
       const pushMessage = await chat.sendMessage(direct, 'alice', 'push-message', 'Push me');
@@ -688,6 +759,8 @@ test('chat REST, privacy, ordering, sockets, outbox and Expo receipts on Postgre
     sockets.forEach(socket => socket.disconnect());
     if (io) await new Promise(resolve => io.close(resolve));
     else if (server) await new Promise(resolve => server.close(resolve));
+    const { drainPresence } = await import('../src/services/presence.service.ts');
+    await drainPresence();
     await prisma?.$disconnect();
     // Generated identifier validated before this exact test-only schema removal.
     assert.match(schema, /^chat_test_[a-f0-9]{32}$/);
