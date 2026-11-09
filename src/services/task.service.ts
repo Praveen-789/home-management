@@ -154,6 +154,13 @@ export async function updateTask(
       data: patch,
       select: taskSelect,
     });
+    if (patch.status === "DONE") {
+      // Reopening a task does not silently re-enable old reminders.
+      await tx.taskReminder.updateMany({
+        where: { taskId: task.id },
+        data: { enabled: false, nextRunAt: null, version: { increment: 1 } },
+      });
+    }
     // Notify only on a change, so retrying the same PATCH does not create noise.
     if (patch.assignedToId && patch.assignedToId !== task.assignedToId && patch.assignedToId !== requesterId) {
       await createNotification({

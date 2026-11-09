@@ -108,6 +108,7 @@ model HouseholdMember {
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  taskReminders TaskReminder[]
 
   @@unique([userId, householdId])
 }
@@ -151,6 +152,7 @@ model Task {
   // Virtual back-relations only; a task has zero or more expenses and images and no such columns.
   expenses Expense[]
   images   Image[]
+  reminders TaskReminder[]
 
   @@index([householdId, status])
   @@index([assignedToId])
@@ -422,8 +424,56 @@ model DeviceToken {
   updatedAt  DateTime       @updatedAt
   user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   deliveries ChatDelivery[]
+  reminderDeliveries TaskReminderDelivery[]
 
   @@index([userId])
+}
+
+// Personal preferences, independent of task ownership and assignment.
+model TaskReminder {
+  id String @id @default(uuid())
+  taskId String
+  userId String
+  membershipId String
+  repeat String
+  timeZone String
+  localTime String?
+  nextRunAt DateTime?
+  enabled Boolean @default(true)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  membership HouseholdMember @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  deliveries TaskReminderDelivery[]
+
+  @@unique([taskId, userId])
+  @@index([enabled, nextRunAt])
+}
+
+// One push per scheduled occurrence and device. Leases permit restart recovery.
+model TaskReminderDelivery {
+  id String @id @default(uuid())
+  reminderId String
+  version Int
+  scheduledAt DateTime
+  notificationId String
+  deviceTokenId String
+  attempts Int @default(0)
+  availableAt DateTime @default(now())
+  leaseId String?
+  leaseUntil DateTime?
+  ticketId String?
+  ticketAt DateTime?
+  completedAt DateTime?
+  failedAt DateTime?
+  lastError String?
+  createdAt DateTime @default(now())
+  reminder TaskReminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  deviceToken DeviceToken @relation(fields: [deviceTokenId], references: [id], onDelete: Cascade)
+
+  @@unique([reminderId, version, scheduledAt, deviceTokenId])
+  @@index([completedAt, failedAt, availableAt])
 }
 
 // Transactional outbox, one live job per recipient and push job per device.

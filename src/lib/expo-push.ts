@@ -72,3 +72,17 @@ export async function getExpoReceipt(ticketId: string): Promise<boolean> {
   check(result);
   return true;
 }
+
+// Standard OS-rendered alert, independent of Android's chat-only data handler.
+export async function sendTaskReminderPush(token: string, data: {
+  householdId: string; taskId: string; notificationId: string; recipientId: string;
+}, title: string): Promise<string> {
+  const response = await post("send", {
+    to: token, title: "Task reminder", body: pushPreview(title), sound: "default",
+    priority: "high", ttl: 3600, data: { type: "TASK_REMINDER", ...data },
+  }) as { data?: ExpoResult | ExpoResult[] };
+  const result = Array.isArray(response.data) ? response.data[0] : response.data;
+  check(result);
+  if (typeof result?.id !== "string") throw new PushError("MissingTicket", true);
+  return result.id;
+}

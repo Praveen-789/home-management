@@ -8,6 +8,7 @@ import invitationRoutes from "./routes/invitation.routes.js";
 import { conversationRoutes, deviceRoutes, householdChatRoutes } from "./routes/chat.routes.js";
 import siteRoutes from "./routes/site.routes.js";
 import { webOrigins } from "./lib/web-origins.js";
+import internalRoutes from "./routes/internal.routes.js";
 
 const app = express();
 
@@ -23,6 +24,7 @@ app.use("/api/invitations", invitationRoutes);
 app.use("/api/households/:householdId/conversations", householdChatRoutes);
 app.use("/api/conversations", conversationRoutes);
 app.use("/api/devices", deviceRoutes);
+app.use("/api/internal", internalRoutes);
 app.use("/", siteRoutes);
 
 export default app;

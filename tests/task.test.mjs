@@ -31,6 +31,7 @@ after(async () => {
 function setup({ actor = 'OWNER', createdById = 'creator', assignedToId = 'assignee', found = true, assigneeIsMember = true, total = 1 } = {}) {
   const row = { ...task, createdById, assignedToId };
   db = {
+    taskReminder: { updateMany: mock.fn(async () => ({ count: 1 })) },
     notification: { create: mock.fn(async ({ data }) => ({ id: "notice", ...data })) },
     // Only read for the actor's name, and only when a notification is sent.
     user: { findUnique: mock.fn(async ({ where, select }) => {
@@ -333,6 +334,10 @@ test('completion notifies creator only on a transition to DONE', async () => {
     setup();
     db.row.status = previousStatus;
     assert.equal((await request('PATCH', 'task-1', { status: 'DONE' })).status, 200);
+    assert.deepEqual(db.taskReminder.updateMany.mock.calls[0].arguments[0], {
+      where: { taskId: 'task-1' },
+      data: { enabled: false, nextRunAt: null, version: { increment: 1 } },
+    });
     const notices = db.notification.create.mock.calls.map(call => call.arguments[0].data);
     assert.equal(notices.length, previousStatus === 'DONE' ? 0 : 1);
     if (notices.length) {

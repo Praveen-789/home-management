@@ -4,7 +4,7 @@ import { AppError } from "../lib/errors.js";
 
 // Keep the database column as text while the event list is still evolving.
 export const NOTIFICATION_TYPES = [
-  "TASK_ASSIGNED", "TASK_COMPLETED", "EXPENSE_ADDED", "EXPENSE_UPDATED",
+  "TASK_ASSIGNED", "TASK_COMPLETED", "TASK_REMINDER", "EXPENSE_ADDED", "EXPENSE_UPDATED",
   "HOUSEHOLD_INVITATION", "INVITATION_DECLINED", "MEMBER_JOINED", "MEMBER_REMOVED",
   "CHAT_MESSAGE", "POST_CREATED", "POST_COMMENTED",
 ] as const;
